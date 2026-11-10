@@ -43,10 +43,10 @@ rendering, invert) and exits non-zero on failure. It then runs the CPU logic tes
 ## What it shows
 
 * Exposure list (recursive folder scan, drag-and-drop): embedded GMS thumbnail, indicated magnification, pixel size, dimensions, acquisition time; sort by name / time / magnification.
-* Image: pan (drag), zoom at cursor (wheel / pinch), double-click or `F` to fit, `1` for 100 %, `I` invert, ←/→ previous/next. Scale bar from the calibration, cursor position (px and nm) and raw pixel value.
+* Image: pan (drag), zoom at cursor (wheel / pinch), double-click or `F` to fit, `1` for 100 %, `I` invert, ←/→ previous/next. Scale bar from the calibration, cursor position (px and nm) and raw pixel value. `M` opens the measure tool (drag a line, read its length in nm and px). View ▸ Show Lengths in Ångströms (⌥⌘U) switches all lengths between nm and Å.
 * Display: auto contrast (percentile or mean ± nσ) or manual black/white points, gamma, invert; GPU Gaussian low-pass and large-scale background flattening.
 * Overview tab: histogram with the contrast window, plus File / Image / Acquisition / Microscope / Session sections pulled from the DM tags (pixel size, FOV, mean signal in e⁻/Å² when the intensity calibration is in electrons, camera, exposure, binning, drift, voltage, magnification, stage, …).
-* FFT tab: power spectrum of the center crop (power of two, Hann window) with resolution rings in Å, optional division by the radial mean to make Thon rings visible, and radial profile.
+* FFT tab: tile-averaged power spectrum (Hann-windowed, 50 % overlapping tiles; box size 256–2048 px) with resolution rings in Å, an optional "Flatten background" view that subtracts the slow radial trend of the log-power so Thon rings stand out, and the radial profile. A CTF card fits defocus (and astigmatism, if it clearly improves the fit) and draws the fitted zeros on the spectrum, as in the figure above. It is a diagnostic only; nothing is corrected.
 * Tags tab: every tag in the file, filterable.
 * Export: PNG (current contrast), MRC float32 raw or filtered (rows flipped to MRC bottom-left origin; pixel size written to the cell). Note: the picker reads MRC files as stored (row 0 on top, like RELION / mrcfile), so an MRC exported from here appears upside down relative to the DM view if you open it again.
 
