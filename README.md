@@ -7,6 +7,10 @@ exposure viewer: exposure list on the left, GPU-rendered image in the center, in
 * Swift 5 / SwiftUI shell, Metal (MetalKit) renderer, Accelerate (vDSP) FFT, Swift Charts. No third-party dependencies.
 * Requires macOS 14+ and Xcode 15+ (command-line tools are enough for `swift build`).
 
+![Fitted CTF zeros overlaid on FFT power spectra of three micrographs](docs/ctf_zeros.png)
+
+*FFT tab, CTF diagnostic: fitted zeros (cyan) over the power spectra of three micrographs at different magnifications. The fit is for inspection only; nothing is corrected.*
+
 ## Build and run
 
     ./build_app.sh              # builds Thon.app next to this file (ad-hoc signed)
