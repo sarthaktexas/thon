@@ -75,6 +75,7 @@ final class AppModel: ObservableObject {
     @Published var frame = 0
     @Published var showInspector = true
     @Published var fftNormalize = true
+    @Published var fftTile = 512 { didSet { if fftTile != oldValue { recomputeFFT() } } }
     @Published var tagQuery = ""
     @Published var inspectorTab: InspectorTab = .overview
     @Published var showGallery = false
@@ -226,8 +227,8 @@ final class AppModel: ObservableObject {
                 picks.setMicrograph(key: picks.store.key(for: url), width: loaded.entry.width, height: loaded.entry.height, pixelSizeA: loaded.entry.pixelSizeA)
                 generation += 1
                 isLoading = false
-                let px = loaded.pixels, w = loaded.entry.width, h = loaded.entry.height
-                let ps = await Task.detached(priority: .utility) { computePowerSpectrum(pixels: px, width: w, height: h) }.value
+                let px = loaded.pixels, w = loaded.entry.width, h = loaded.entry.height, tileSize = fftTile
+                let ps = await Task.detached(priority: .utility) { computePowerSpectrum(pixels: px, width: w, height: h, tile: tileSize) }.value
                 if token == loadToken { fft = ps }
             } catch {
                 guard token == loadToken else { return }
@@ -238,6 +239,20 @@ final class AppModel: ObservableObject {
     }
 
     func reloadFrame() { loadSelection() }
+
+    /// Recompute the power spectrum for the current image (box size changed).
+    func recomputeFFT() {
+        guard let d = doc else { return }
+        let token = loadToken, px = d.pixels, w = d.entry.width, h = d.entry.height, tileSize = fftTile
+        fft = nil
+        Task {
+            let ps = await Task.detached(priority: .utility) { computePowerSpectrum(pixels: px, width: w, height: h, tile: tileSize) }.value
+            if token == loadToken, tileSize == fftTile { fft = ps }
+        }
+    }
+
+    /// Open the inspector on the FFT tab (Thon rings).
+    func showThonRings() { inspectorTab = .fft; showInspector = true }
 
     func applyProcessedStats(_ st: ImageStats?) {
         view.displayStats = st ?? doc?.stats
@@ -264,6 +279,7 @@ final class AppModel: ObservableObject {
         case "f": view.fit(); return true
         case "1": view.setZoom(1); return true
         case "i": view.invert.toggle(); return true
+        case "t": showThonRings(); return true
         case "=", "+": view.setZoom(view.zoom * 1.25); return true
         case "-": view.setZoom(view.zoom / 1.25); return true
         default: return false

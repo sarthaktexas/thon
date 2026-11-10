@@ -35,6 +35,7 @@ struct ContentView: View {
                 Button { model.view.fit() } label: { Label("Fit", systemImage: "arrow.up.left.and.down.right.magnifyingglass") }
                 Button { model.view.setZoom(1) } label: { Label("100%", systemImage: "1.magnifyingglass") }
                 InvertToggle(vs: model.view)
+                Button { model.showThonRings() } label: { Label("Thon rings (FFT)", systemImage: "circle.dashed") }.help("Power spectrum / Thon rings (T)")
                 Menu {
                     Button("PNG (current contrast)…") { model.exportPNG() }
                     Button("MRC – raw float32…") { model.exportMRC(processed: false) }
@@ -376,15 +377,18 @@ struct DisplayTab: View {
 
 struct FFTTab: View {
     @ObservedObject var model: AppModel
-    private let rings: [Double] = [30, 20, 15, 10, 8, 6, 5, 4, 3, 2.5, 2]
+    private let rings: [Double] = [100, 60, 40, 30, 20, 15, 10, 8, 6, 5, 4, 3, 2.5, 2]
 
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
                 if let ps = model.fft, let doc = model.doc {
                     let pa = doc.entry.pixelSizeA
-                    Card(title: "Power spectrum (\(ps.n)×\(ps.n) center crop, Hann window)") {
-                        Toggle("Divide by radial mean (enhance rings)", isOn: $model.fftNormalize)
+                    Card(title: "Power spectrum (\(ps.n)×\(ps.n) box, mean of \(ps.tiles) tiles)") {
+                        Toggle("Flatten background (enhance rings)", isOn: $model.fftNormalize)
+                        Picker("Box size", selection: $model.fftTile) {
+                            ForEach([256, 512, 1024, 2048], id: \.self) { Text("\($0) px").tag($0) }
+                        }.pickerStyle(.segmented)
                         GeometryReader { geo in
                             let s = geo.size.width
                             ZStack {

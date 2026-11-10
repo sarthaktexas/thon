@@ -44,10 +44,16 @@ and the web picker. Sizes are kept in nm and converted with the pixel size of ea
 Reserved (cannot be label hotkeys): A B F G I P S V , . = + -.
 
 ## Labels
-Default labels are the web picker's: ring_top, side, tilted, oligomer, uncertain, reject (reject is not exported). Edit them in
-*Edit labels…* (name, color, hotkey, marker shape, exported flag) or by hand in `labels.json` in the project folder; a valid
-`labels.json` is used when a new project is created. Label ids are permanent (they appear in exports); labels that still have
-picks cannot be removed.
+New projects start with the **Quality** scheme: `good` (1), `maybe` (2), `reject` (3, not exported). The **Views** preset is the web
+picker's six labels (ring_top, side, tilted, oligomer, uncertain, reject). Choose a preset or edit labels in *Edit labels…*
+(name, color, hotkey, marker shape, exported flag), or by hand in `labels.json` in the project folder; a valid `labels.json` is
+used when a new project is created. Label ids are permanent (they appear in exports). When a preset or edit drops a label that
+still has picks, the editor asks where those picks go (pre-filled where there is an obvious match, e.g. uncertain -> maybe) and
+writes a project backup first; the move cannot be undone with Cmd-Z.
+
+**Maybe flag (optional).** Tick *Enable the per-pick "maybe" flag* in the label editor. `?` (or `/`) then toggles the flag on the
+selected picks, independent of their label (a "?" is drawn on the marker). Export writes a `maybe` column in `all_picks.csv`, and
+*Leave out picks flagged maybe* (CLI: `--exclude-maybe`) drops them from the RELION / EMAN files.
 
 ## Files
 | File | Content |

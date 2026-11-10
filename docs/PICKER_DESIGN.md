@@ -41,10 +41,12 @@ Project    { version, scheme, params{box_nm, diameter_nm}, mics{ key -> MicRecor
   keep newest 30.
 
 ## LabelScheme
-`labels.json` next to the project (or inside `picks_project.json`). Default preset = the web picker's six labels:
-`ring_top 1 #ff4d4d`, `side 2 #ffd400`, `tilted 3 #35e0ff`, `oligomer 4 #4dff6a`, `uncertain 5 #ff7bf5`,
-`reject 6 #9a9a9a`. Each label: id, name, hotkey (1-9), color, marker shape (circle|box|cross|ring), exported (bool).
-Editable in the Picks tab (add/remove/rename/recolor/reorder) and by hand in JSON.
+`labels.json` next to the project (or inside `picks_project.json`). Default for new projects = Quality: `good 1 #4dff6a`,
+`maybe 2 #ffd400`, `reject 3 #9a9a9a` (reject not exported). Preset "Views" = the web picker's six labels: `ring_top 1 #ff4d4d`,
+`side 2 #ffd400`, `tilted 3 #35e0ff`, `oligomer 4 #4dff6a`, `uncertain 5 #ff7bf5`, `reject 6 #9a9a9a`; a project file with no stored
+scheme is read as Views. Each label: id, name, hotkey (1-9), color, marker shape (circle|box|cross|ring), exported (bool).
+Editable in the Picks tab (add/remove/rename/recolor/reorder, presets, remap of dropped labels) and by hand in JSON.
+Optional `params.maybeFlag` enables a per-pick `maybe` boolean (key `?`), stored only when true.
 
 ## Auto-picker (CPU, Accelerate)
 1. Optional flatten (large-sigma Gaussian subtract) and robust z-score normalization (MAD).

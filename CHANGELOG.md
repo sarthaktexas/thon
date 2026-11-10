@@ -1,18 +1,25 @@
 # Changelog
 
+## Thon rings fix
+* FFT tab now shows an average of up to 64 overlapping Hann-windowed boxes (default 512 px; 256/512/1024 selectable) instead of one noisy periodogram.
+* "Divide by radial mean" removed: it erased circularly symmetric Thon rings. Replaced by "Flatten background", which subtracts only the slow radial trend of log-power.
+* New toolbar button and `T` shortcut open the FFT tab; added 100/60/40 Å guide circles for low-resolution rings.
+* `--dump FILE --fft --fft-png PREFIX` writes the log and flattened spectra as PNGs.
+
 ## Picker (this version)
 * `.mrc` / `.mrcs` input (modes 0, 1, 2, 6, 12, either byte order).
 * Picker: pick model with undo/redo, label scheme editor, overlay (circle/box/cross/ring), loupe, project autosave + backups.
 * Auto-picker (bright core / LoG) with ghost candidates, live mode, clean-up tools, external command hook.
 * Import (RELION star, coords_list, CSV, web picker json) and export (RELION, CSV, EMAN) in the web picker's layout.
 * Gallery, RELION class back-mapping with class averages, swipe mode with blind decoys and decision log.
+* Labels: new projects default to Quality (good / maybe / reject); Views preset keeps the six web-picker labels; presets + remap of dropped labels in the editor; optional per-pick maybe flag (`?`) with `--exclude-maybe` export.
 * New CLI modes: `--picktest`, `--autopick`, `--export-picks`. `--selftest` also runs the picker logic tests.
 
 ## Manual test checklist (GUI, needs your Mac)
 1. `./build_app.sh` finishes; `.build/release/Thon --selftest` and `--picktest --data /path/to/relion-project` print no FAIL.
 2. Open `<project>/Micrographs`: .mrc files list with thumbnails and Å/px; picture is upright (row 0 on top).
 3. Press P. Click adds a colored circle at the click position; drag moves it; right-click deletes; ⌘Z / ⇧⌘Z work; shift-drag selects.
-4. 1–6 relabel the selection; Edit labels… changes names/colors/hotkeys; a reserved key is refused.
+4. 1–3 (Quality) relabel the selection; Edit labels… ▸ Presets switches scheme and asks where dropped labels' picks go; Edit labels… changes names/colors/hotkeys; a reserved key is refused.
 5. Picks tab ▸ Find particles: dashed ghosts appear in a second or less; sliders change them with *Live*; clicking a ghost makes it solid.
 6. Zoom/pan with markers on: markers stay on the particles (check at 100 % that the circle center sits on the pixel you clicked; loupe cross agrees).
 7. Quit and reopen the folder: picks are restored; `picks_project.json` and `backups/` exist.
