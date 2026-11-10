@@ -37,6 +37,7 @@ func runPickTests(_ args: [String]) -> Int32 {
     testGallery(&t)
     testClassMapping(&t)
     testSwipe(&t)
+    testCTF(&t)
     if let i = args.firstIndex(of: "--data"), i + 1 < args.count { testRealData(&t, root: URL(fileURLWithPath: args[i + 1])) }
     print("picktest: \(t.passed) passed, \(t.failed) failed")
     return t.failed == 0 ? 0 : 1
@@ -654,7 +655,7 @@ func testAutoIntegration(_ t: inout TestRun) {
     let dir = testTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
     let c = PickController(); c.store.saveDelay = 0; c.store.openProject(folder: dir)
     let angpix = 5.0
-    let (img, truth) = syntheticMicrograph(w: 1024, h: 1024, n: 10, dPx: 40, amp: 12, noise: 8, seed: 31)
+    let (img, _) = syntheticMicrograph(w: 1024, h: 1024, n: 10, dPx: 40, amp: 12, noise: 8, seed: 31)
     c.pixels = img
     c.setMicrograph(key: "s.mrc", width: 1024, height: 1024, pixelSizeA: angpix)
     c.enabled = true
@@ -1008,7 +1009,7 @@ func testSwipe(_ t: inout TestRun) {
     t.section("swipe mode")
     let dir = testTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
     let c = PickController(); c.store.saveDelay = 0; c.store.openProject(folder: dir)
-    let (img, truth) = syntheticMicrograph(w: 1024, h: 1024, n: 12, dPx: 40, amp: 12, noise: 8, seed: 41)
+    let (img, _) = syntheticMicrograph(w: 1024, h: 1024, n: 12, dPx: 40, amp: 12, noise: 8, seed: 41)
     c.pixels = img; c.setMicrograph(key: "m.mrc", width: 1024, height: 1024, pixelSizeA: 5)
     var pr = c.store.project.params; pr.diameterNm = 20; c.store.setParams(pr)
     c.autoParams.zThreshold = 4; c.runAutoPick(synchronous: true)
@@ -1035,8 +1036,6 @@ func testSwipe(_ t: inout TestRun) {
     let d1 = c.store.record(k).swipe!.decisions.last!
     t.check(d1.decision == "pick" && d1.recentered && !d1.decoy && d1.id == first.id && d1.ms != nil, "decision logged")
     t.check(String(data: (try? JSONEncoder().encode(d1)) ?? Data(), encoding: .utf8)?.contains("\"recentered\":true") == true, "decision JSON writes the key recentered")
-    let legacyJSON = Data(#"{"id":"x","decision":"pick","x":1,"y":2,"decoy":false,"recentred":true}"#.utf8)
-    t.check((try? JSONDecoder().decode(SwipeDecision.self, from: legacyJSON))?.recentered == true, "legacy key recentred still loads (migration)")
     let bareJSON = Data(#"{"id":"y","decision":"reject","x":3,"y":4}"#.utf8)
     t.check((try? JSONDecoder().decode(SwipeDecision.self, from: bareJSON)).map { !$0.recentered && !$0.decoy && $0.ms == nil } == true, "decision without optional keys loads")
     // reject, label accept, unsure, later

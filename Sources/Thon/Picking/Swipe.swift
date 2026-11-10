@@ -16,11 +16,9 @@ struct SwipeDecision: Codable, Equatable {
     enum CodingKeys: String, CodingKey { case id, decision, label, x, y, decoy, recentered, ms, t }
 }
 
-/// Logs and project files written before the spelling change store the flag under the key `recentred`; they still load.
-/// (Encoding is synthesized and always writes `recentered`.)
+/// Optional keys (`decoy`, `recentered`, `ms`, `t`) may be absent when decoding.
+/// (Encoding is synthesized.)
 extension SwipeDecision {
-    private enum LegacyKeys: String, CodingKey { case recentred }
-
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
@@ -29,11 +27,7 @@ extension SwipeDecision {
         x = try c.decode(Double.self, forKey: .x)
         y = try c.decode(Double.self, forKey: .y)
         decoy = try c.decodeIfPresent(Bool.self, forKey: .decoy) ?? false
-        if let r = try c.decodeIfPresent(Bool.self, forKey: .recentered) {
-            recentered = r
-        } else {
-            recentered = try decoder.container(keyedBy: LegacyKeys.self).decodeIfPresent(Bool.self, forKey: .recentred) ?? false
-        }
+        recentered = try c.decodeIfPresent(Bool.self, forKey: .recentered) ?? false
         ms = try c.decodeIfPresent(Int.self, forKey: .ms)
         t = try c.decodeIfPresent(Double.self, forKey: .t)
     }
