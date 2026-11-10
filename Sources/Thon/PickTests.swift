@@ -20,8 +20,10 @@ func runPickTests(_ args: [String]) -> Int32 {
     if args.contains("--autopick") { return runAutoPickCLI(args) }
     if args.contains("--export-picks") { return runExportCLI(args) }
     var t = TestRun()
+    PickProject.newProjectScheme = .views          // most tests were written against the six view labels (ids ring_top, side, …)
     testMRC(&t)
     testLabelScheme(&t)
+    testQualityDefaultAndMaybe(&t)
     testGrid(&t)
     testStoreEditing(&t)
     testStorePersistence(&t)
@@ -134,15 +136,102 @@ func testMRC(_ t: inout TestRun) {
 
 // MARK: labels, grid, store
 
+// MARK: quality default, presets, maybe flag
+
+func testQualityDefaultAndMaybe(_ t: inout TestRun) {
+    t.section("quality default / presets / maybe flag")
+    let q = LabelScheme.default
+    t.check(q == .quality && q.labels.map { $0.id } == ["good", "maybe", "reject"] && q.validate().isEmpty, "default scheme is Quality (good / maybe / reject)")
+    t.check(q.label(forKey: "1")?.id == "good" && q.label(forKey: "3")?.id == "reject" && q.label("reject")?.exported == false && q.label("maybe")?.exported == true, "quality hotkeys 1-3, only reject not exported")
+    t.check(LabelScheme.presets.count == 2 && LabelScheme.presets.allSatisfy { $0.scheme.validate().isEmpty }, "presets valid")
+    t.check(LabelScheme.views.suggestedTarget(forMissing: "good") == nil && LabelScheme.quality.suggestedTarget(forMissing: "ring_top") == "good"
+            && LabelScheme.quality.suggestedTarget(forMissing: "uncertain") == "maybe" && LabelScheme.quality.suggestedTarget(forMissing: "banana") == nil, "remap suggestions only point at labels that exist")
+
+    // brand-new project gets the Quality scheme; a stored scheme / a pre-scheme file keeps working
+    let saved = PickProject.newProjectScheme
+    PickProject.newProjectScheme = .default
+    let c0 = PickController(); c0.store.saveDelay = 0
+    let dir0 = testTempDir(); defer { try? FileManager.default.removeItem(at: dir0) }
+    c0.store.openProject(folder: dir0)
+    t.check(c0.store.scheme == .quality && c0.activeLabel == "good", "new project: Quality scheme, active label is Good")
+    PickProject.newProjectScheme = saved
+    let legacy = try? PickStore.decode(Data(#"{"mics":{"a.mrc":{"picks":[{"x":1,"y":2,"label":"ring_top"}]}}}"#.utf8))
+    t.check(legacy?.scheme == .views && legacy?.params.maybeFlag == false, "project file without a scheme resolves to the view labels; maybe flag off")
+
+    // maybe flag persistence: absent unless set
+    var p1 = Pick(id: "a", x: 1, y: 2, label: "good"), p2 = Pick(id: "b", x: 3, y: 4, label: "good", maybe: true)
+    p1.maybe = nil; p2.maybe = true
+    let j1 = String(data: (try? JSONEncoder().encode(p1)) ?? Data(), encoding: .utf8) ?? ""
+    let j2 = String(data: (try? JSONEncoder().encode(p2)) ?? Data(), encoding: .utf8) ?? ""
+    t.check(!j1.contains("maybe") && j2.contains("\"maybe\":true"), "maybe flag is only written when set", j1 + " | " + j2)
+    t.check((try? JSONDecoder().decode(Pick.self, from: Data(j2.utf8)))?.isMaybe == true && (try? JSONDecoder().decode(Pick.self, from: Data(j1.utf8)))?.isMaybe == false, "maybe flag round trip")
+
+    // controller: ? is inert until the flag is enabled
+    let c = PickController(); c.store.saveDelay = 0
+    let dir = testTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+    c.store.openProject(folder: dir); c.store.setScheme_forTest(.quality)
+    c.setMicrograph(key: "m.mrc", width: 100, height: 100, pixelSizeA: 2)
+    c.enabled = true
+    c.store.add(Pick(id: "a", x: 10, y: 10, label: "good"), to: "m.mrc"); c.store.add(Pick(id: "b", x: 50, y: 50, label: "maybe"), to: "m.mrc")
+    c.selection = ["a"]
+    t.check(!c.handleKey(chars: "?", keyCode: 44, shift: true, command: false) && c.store.pick("a", in: "m.mrc")?.isMaybe == false, "? does nothing while the maybe flag is off (key not consumed)")
+    c.openLabelEditor(); c.draftMaybeFlag = true; c.applyDraftScheme()
+    t.check(c.store.project.params.maybeFlag && c.schemeError == nil, "maybe flag enabled from the editor")
+    t.check(c.handleKey(chars: "?", keyCode: 44, shift: true, command: false) && c.store.pick("a", in: "m.mrc")?.isMaybe == true && c.store.pick("a", in: "m.mrc")?.label == "good", "? flags the selection without changing its label")
+    t.check(c.store.maybeCount("m.mrc") == 1, "maybe count")
+    c.store.undo("m.mrc")
+    t.check(c.store.pick("a", in: "m.mrc")?.isMaybe == false, "flagging is one undo step")
+    c.store.redo("m.mrc")
+    c.selection = ["a"]; _ = c.handleKey(chars: "/", keyCode: 44, shift: false, command: false)
+    t.check(c.store.pick("a", in: "m.mrc")?.isMaybe == false, "second press clears the flag")
+    _ = c.handleKey(chars: "?", keyCode: 44, shift: true, command: false)
+    c.setActiveLabel("maybe")
+    t.check(c.store.pick("a", in: "m.mrc")?.label == "maybe" && c.store.pick("a", in: "m.mrc")?.isMaybe == true, "relabel keeps the flag")
+
+    // export: reject dropped, maybe flagged picks optional, csv column present
+    let out = testTempDir(); defer { try? FileManager.default.removeItem(at: out) }
+    c.store.add(Pick(id: "r", x: 70, y: 70, label: "reject"), to: "m.mrc")
+    var o = ExportOptions(); o.formats = [.csv, .relion]
+    if let s1 = try? PickExporter.export(project: c.store.project, root: dir, outDir: out, options: o) {
+        let csv = (try? String(contentsOf: out.appendingPathComponent("all_picks.csv"), encoding: .utf8)) ?? ""
+        t.check(s1.total == 2 && s1.skippedLabels == ["reject"] && csv.hasPrefix("dataset,") && csv.contains(",source,maybe\n") && csv.contains(",manual,1\n"), "export: reject dropped, maybe column written", csv)
+    } else { t.check(false, "export with maybe flag threw") }
+    o.excludeMaybe = true
+    if let s2 = try? PickExporter.export(project: c.store.project, root: dir, outDir: out, options: o) {
+        t.check(s2.total == 1 && s2.totals["maybe"] == 1, "export excludeMaybe leaves out flagged picks", "\(s2.totals)")
+    } else { t.check(false, "export excludeMaybe threw") }
+
+    // preset switch with picks in use: remap, nothing silently lost
+    let c2 = PickController(); c2.store.saveDelay = 0
+    let dir2 = testTempDir(); defer { try? FileManager.default.removeItem(at: dir2) }
+    c2.store.openProject(folder: dir2); c2.store.setScheme_forTest(.views)
+    c2.setMicrograph(key: "a.mrc", width: 100, height: 100, pixelSizeA: 2)
+    for (i, l) in ["ring_top", "side", "tilted", "uncertain", "reject", "ring_top"].enumerated() { c2.store.add(Pick(id: "p\(i)", x: Double(10 + 12 * i), y: 10, label: l), to: "a.mrc") }
+    c2.store.add(Pick(id: "d", x: 5, y: 90, label: "side", source: .auto, status: .dismissed), to: "a.mrc")
+    c2.openLabelEditor(); c2.loadDraftPreset(.quality)
+    let miss = c2.draftMissingLabels.map { $0.id }
+    t.check(Set(miss) == ["ring_top", "side", "tilted", "uncertain"], "preset switch lists the dropped labels that have picks", "\(miss)")
+    t.check(c2.draftRemap["ring_top"] == "good" && c2.draftRemap["uncertain"] == "maybe" && c2.draftRemap["tilted"] == "good", "remap pre-filled with suggestions")
+    c2.draftRemap["tilted"] = nil
+    c2.applyDraftScheme()
+    t.check(c2.schemeError?.contains("tilted") == true && c2.showLabelEditor && c2.store.scheme == .views && c2.store.picks("a.mrc").first { $0.id == "p0" }?.label == "ring_top", "unresolved label blocks the switch and changes nothing")
+    c2.draftRemap["tilted"] = "maybe"
+    c2.applyDraftScheme()
+    let after = Dictionary(uniqueKeysWithValues: c2.store.picks("a.mrc").map { ($0.id, $0.label) })
+    t.check(c2.schemeError == nil && c2.store.scheme == .quality && after["p0"] == "good" && after["p1"] == "good" && after["p2"] == "maybe"
+            && after["p3"] == "maybe" && after["p4"] == "reject" && after["p5"] == "good" && after["d"] == "good" && after.count == 7, "picks (incl. dismissed) moved per the remap; none lost", "\(after)")
+    t.check(c2.store.labelUsage().keys.allSatisfy { c2.store.scheme.label($0) != nil } && c2.activeLabel == "good", "every pick label exists in the new scheme; active label valid")
+}
+
 func testLabelScheme(_ t: inout TestRun) {
     t.section("label scheme")
-    let d = LabelScheme.default
-    t.check(d.labels.count == 6 && d.validate().isEmpty, "default scheme valid")
+    let d = LabelScheme.views
+    t.check(d.labels.count == 6 && d.validate().isEmpty, "views preset valid")
     t.check(d.label(forKey: "3")?.id == "tilted" && d.label("reject")?.exported == false, "hotkey lookup / reject not exported")
     var bad = d; bad.labels.append(PickLabel(id: "side", name: "dup", key: "1", color: "#12"))
     let errs = bad.validate()
-    t.check(errs.contains { $0.contains("duplicate id") } && errs.contains { $0.contains("duplicate hotkey") } && errs.contains { $0.contains("bad colour") }, "validate finds duplicates and bad colour", "\(errs)")
-    t.check(parseHexColor("#ff4d4d").map { abs($0.0 - 1) < 1e-9 && abs($0.1 - 77.0/255) < 1e-9 } == true, "hex colour")
+    t.check(errs.contains { $0.contains("duplicate id") } && errs.contains { $0.contains("duplicate hotkey") } && errs.contains { $0.contains("bad color") }, "validate finds duplicates and bad color", "\(errs)")
+    t.check(parseHexColor("#ff4d4d").map { abs($0.0 - 1) < 1e-9 && abs($0.1 - 77.0/255) < 1e-9 } == true, "hex color")
     // web-picker manifest style list with only key/id/name/color
     let dir = testTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
     let u = dir.appendingPathComponent("labels.json")
@@ -227,7 +316,7 @@ func testStorePersistence(_ t: inout TestRun) {
     t.section("pick store: persistence")
     let dir = testTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
     let s = PickStore(); s.saveDelay = 0
-    t.check(s.openProject(folder: dir) && s.project.scheme == .default, "new project uses default scheme")
+    t.check(s.openProject(folder: dir) && s.project.scheme == PickProject.newProjectScheme, "new project uses the new-project scheme")
     t.check(s.key(for: dir.appendingPathComponent("Micrographs/a.mrc")) == "Micrographs/a.mrc", "relative key")
     t.check(s.key(for: URL(fileURLWithPath: "/elsewhere/b.mrc")) == "/elsewhere/b.mrc", "absolute key outside project")
     s.add(Pick(id: "a", x: 1234.5, y: 99.25, label: "side", score: 3.5, source: .auto, status: .accepted, diameterNm: 18), to: "Micrographs/a.mrc")
@@ -260,12 +349,12 @@ func testStorePersistence(_ t: inout TestRun) {
     custom.labels[0].key = "j"
     try? custom.save(to: dir2.appendingPathComponent("labels.json"))
     let s4 = PickStore(); s4.openProject(folder: dir2)
-    t.check(s4.scheme == .default, "invalid labels.json (dup hotkey) falls back to default")
+    t.check(s4.scheme == PickProject.newProjectScheme, "invalid labels.json (dup hotkey) falls back to the new-project scheme")
     // tolerant decoding of a sparse hand-written file
     let dir3 = testTempDir(); defer { try? FileManager.default.removeItem(at: dir3) }
     try? Data(#"{"mics":{"a.mrc":{"picks":[{"x":1,"y":2,"label":"side"},{"x":3,"y":4}]}}}"#.utf8).write(to: dir3.appendingPathComponent("picks_project.json"))
     let s5 = PickStore(); let ok5 = s5.openProject(folder: dir3)
-    t.check(ok5 && s5.picks("a.mrc").count == 2 && s5.picks("a.mrc")[0].status == .accepted && s5.project.scheme == .default, "sparse project JSON decodes with defaults")
+    t.check(ok5 && s5.picks("a.mrc").count == 2 && s5.picks("a.mrc")[0].status == .accepted && s5.project.scheme == .views, "sparse project JSON decodes with defaults (no stored scheme = legacy view labels)")
     // corrupt file -> error reported, project empty, file not overwritten until an edit
     let dir4 = testTempDir(); defer { try? FileManager.default.removeItem(at: dir4) }
     try? Data("{not json".utf8).write(to: dir4.appendingPathComponent("picks_project.json"))
@@ -290,12 +379,12 @@ func testGeometry(_ t: inout TestRun) {
         if abs(b.x - x) > 1e-9 || abs(b.y - y) > 1e-9 { ok = false }
     }
     t.check(ok, "pick <-> view round trip")
-    // view centre maps to `center`; one image px = zoom/backingScale points
+    // view center maps to `center`; one image px = zoom/backingScale points
     let cpt = CGPoint(x: 900 / 2.0 * 1.0, y: 700 / 2.0 * 1.0)
-    t.check(abs(g.toImage(CGPoint(x: 450, y: 350)).x - 2048.5) < 1e-9 && abs(g.toImage(CGPoint(x: 450, y: 350)).y - 1000) < 1e-9, "view centre -> image centre", "\(cpt)")
+    t.check(abs(g.toImage(CGPoint(x: 450, y: 350)).x - 2048.5) < 1e-9 && abs(g.toImage(CGPoint(x: 450, y: 350)).y - 1000) < 1e-9, "view center -> image center", "\(cpt)")
     let a = g.toView(CGPoint(x: 100, y: 100)), b = g.toView(CGPoint(x: 101, y: 100))
     t.check(abs((b.x - a.x) - 0.37 / 2) < 1e-12 && g.pointsPerPixel == 0.185, "points per image pixel")
-    // pixel centre convention: centre of pixel (i, j) is pick coord (i, j) and viewer coord (i+0.5, j+0.5)
+    // pixel center convention: center of pixel (i, j) is pick coord (i, j) and viewer coord (i+0.5, j+0.5)
     let pv = g.pickToView(x: 10, y: 20), iv = g.toView(CGPoint(x: 10.5, y: 20.5))
     t.check(pv == iv, "pick coord = viewer coord - 0.5")
     // crop: values, clamping, out-of-image fill, invert
@@ -438,27 +527,27 @@ struct LCG {
     mutating func gauss() -> Double { let u = max(next(), 1e-12), v = next(); return (-2 * log(u)).squareRoot() * cos(2 * .pi * v) }
 }
 
-/// Synthetic micrograph: Gaussian blobs (sigma = D/6) on a tilted background plus noise. Returns pixels and blob centres.
+/// Synthetic micrograph: Gaussian blobs (sigma = D/6) on a tilted background plus noise. Returns pixels and blob centers.
 func syntheticMicrograph(w: Int, h: Int, n: Int, dPx: Double, amp: Double, noise: Double, seed: UInt64, dark: Bool = false) -> ([Float], [(Double, Double)]) {
     var r = LCG(s: seed)
-    var centres: [(Double, Double)] = []
+    var centers: [(Double, Double)] = []
     var tries = 0
-    while centres.count < n && tries < 10000 {
+    while centers.count < n && tries < 10000 {
         tries += 1
         let x = 1.5 * dPx + r.next() * (Double(w) - 3 * dPx), y = 1.5 * dPx + r.next() * (Double(h) - 3 * dPx)
-        if centres.allSatisfy({ hypot($0.0 - x, $0.1 - y) > 2.2 * dPx }) { centres.append((x, y)) }
+        if centers.allSatisfy({ hypot($0.0 - x, $0.1 - y) > 2.2 * dPx }) { centers.append((x, y)) }
     }
     var a = [Float](repeating: 0, count: w * h)
     let sg = dPx / 6
     for y in 0..<h { for x in 0..<w { a[y * w + x] = Float(100 + 0.01 * Double(x) + 0.02 * Double(y) + noise * r.gauss()) } }
-    for (cx, cy) in centres {
+    for (cx, cy) in centers {
         let rr = Int(3.5 * sg * 1.5)
         for y in max(0, Int(cy) - rr)...min(h - 1, Int(cy) + rr) { for x in max(0, Int(cx) - rr)...min(w - 1, Int(cx) + rr) {
             let d2 = (Double(x) - cx) * (Double(x) - cx) + (Double(y) - cy) * (Double(y) - cy)
             a[y * w + x] += Float((dark ? -amp : amp) * exp(-d2 / (2 * sg * sg)))
         } }
     }
-    return (a, centres)
+    return (a, centers)
 }
 
 func testAutoPrimitives(_ t: inout TestRun) {
@@ -478,7 +567,7 @@ func testAutoPrimitives(_ t: inout TestRun) {
         maxErr = max(maxErr, abs(s - g[y * w + x]))
     } }
     t.check(maxErr < 1e-4, "gaussian == brute-force 2D convolution (edge replicate)", "err \(maxErr)")
-    t.check(abs(k[0] + 2 * k.dropFirst().reduce(0, +) - 1) < 1e-6, "kernel normalised")
+    t.check(abs(k[0] + 2 * k.dropFirst().reduce(0, +) - 1) < 1e-6, "kernel normalized")
     // disk mean vs brute force (edge-aware)
     var worst: Float = 0
     for rad in [1.0, 2.5, 4.2] {
@@ -702,13 +791,13 @@ func testImportExport(_ t: inout TestRun) {
         let sum3 = try PickExporter.export(project: s.project, root: root, outDir: out, options: o)
         t.check(sum3.micrographs == 1 && !fm.fileExists(atPath: out.appendingPathComponent("all_picks.csv").path), "onlyDone exports finished micrographs only; unticked CSV removed")
         let box = (try? String(contentsOf: out.appendingPathComponent("box/DS1/ring_top/a_001.box"), encoding: .utf8)) ?? ""
-        t.check(box == "\(String(format: "%.0f", 100.04 - 62))\t\(String(format: "%.0f", 200.26 - 62))\t124\t124\n", "EMAN box: corner = centre - box/2, size in px", box)
+        t.check(box == "\(String(format: "%.0f", 100.04 - 62))\t\(String(format: "%.0f", 200.26 - 62))\t124\t124\n", "EMAN box: corner = center - box/2, size in px", box)
     } catch { t.check(false, "export threw", "\(error)") }
     // --- import: star (current micrograph), re-import dedupe, candidates, labels
     let s2 = PickStore(); s2.saveDelay = 0; s2.openProject(folder: testTempDir())
     let d2 = testTempDir(); defer { try? fm.removeItem(at: d2) }
     let f1 = d2.appendingPathComponent("a_001_core.star"); try? Data(star.utf8).write(to: f1)
-    var plan = PickImporter.plan(files: [f1], known: [kA, kB, kC], currentKey: nil, scheme: .default, defaultLabel: "oligomer", asCandidates: false)
+    var plan = PickImporter.plan(files: [f1], known: [kA, kB, kC], currentKey: nil, scheme: .views, defaultLabel: "oligomer", asCandidates: false)
     t.check(plan.total == 2 && plan.picks[kA]?.count == 2 && plan.picks[kA]?[0].label == "oligomer" && plan.picks[kA]?[0].score == 7.7, "star import resolves the micrograph from the file name")
     var r = s2.apply(plan)
     t.check(r.added == 2 && s2.accepted(kA).count == 2, "import applied")
@@ -716,28 +805,28 @@ func testImportExport(_ t: inout TestRun) {
     t.check(r.added == 0 && r.skipped == 2 && s2.accepted(kA).count == 2, "re-import adds nothing (dedupe within 1 px)")
     s2.undo(kA)
     t.check(s2.picks(kA).isEmpty && !s2.canUndo(kA), "import is one undo step per micrograph (the repeated import recorded nothing)")
-    plan = PickImporter.plan(files: [f1], known: [kA], currentKey: kB, scheme: .default, defaultLabel: "oligomer", asCandidates: true)
+    plan = PickImporter.plan(files: [f1], known: [kA], currentKey: kB, scheme: .views, defaultLabel: "oligomer", asCandidates: true)
     t.check(plan.picks[kA]?.allSatisfy { $0.status == .candidate } == true, "import as candidates (ghosts)")
     let f2 = d2.appendingPathComponent("unnamed.star"); try? Data(star.utf8).write(to: f2)
-    plan = PickImporter.plan(files: [f2], known: [kA], currentKey: kC, scheme: .default, defaultLabel: "side", asCandidates: false)
+    plan = PickImporter.plan(files: [f2], known: [kA], currentKey: kC, scheme: .views, defaultLabel: "side", asCandidates: false)
     t.check(plan.picks[kC]?.count == 2, "star without a matching name goes to the current micrograph")
-    plan = PickImporter.plan(files: [f2], known: [kA], currentKey: nil, scheme: .default, defaultLabel: "side", asCandidates: false)
+    plan = PickImporter.plan(files: [f2], known: [kA], currentKey: nil, scheme: .views, defaultLabel: "side", asCandidates: false)
     t.check(plan.total == 0 && !plan.notes.isEmpty, "no current micrograph -> skipped with a note")
     // --- import: coords_list.star referencing coordinate files
     let lroot = testTempDir(); defer { try? fm.removeItem(at: lroot) }
     try? fm.createDirectory(at: lroot.appendingPathComponent("coords_core/Micrographs_raw"), withIntermediateDirectories: true)
     try? Data("\ndata_\n\nloop_\n_rlnCoordinateX #1\n_rlnCoordinateY #2\n11.0 22.0\n33.0 44.0\n".utf8).write(to: lroot.appendingPathComponent("coords_core/Micrographs_raw/F4a_000_core.star"))
     try? Data("\ndata_coordinate_files\n\nloop_\n_rlnMicrographName #1\n_rlnMicrographCoordinates #2\nMicrographs_raw/F4a_000.mrc coords_core/Micrographs_raw/F4a_000_core.star\nMicrographs_raw/F4a_001.mrc coords_core/Micrographs_raw/missing.star\nMicrographs_raw/nothere.mrc coords_core/Micrographs_raw/F4a_000_core.star\n".utf8).write(to: lroot.appendingPathComponent("coords_list.star"))
-    plan = PickImporter.plan(files: [lroot.appendingPathComponent("coords_list.star")], known: known, currentKey: nil, scheme: .default, defaultLabel: "ring_top", asCandidates: false)
+    plan = PickImporter.plan(files: [lroot.appendingPathComponent("coords_list.star")], known: known, currentKey: nil, scheme: .views, defaultLabel: "ring_top", asCandidates: false)
     t.check(plan.picks["Micrographs_raw/F4a_000.mrc"]?.count == 2 && plan.unmatched == ["Micrographs_raw/nothere.mrc"] && plan.notes.contains { $0.contains("missing.star") }, "coords_list import: follows files, reports missing file and unmatched micrograph", "\(plan.notes) \(plan.unmatched)")
     // --- import: web picker picks.json and swipe.json
     let pj = #"{"version":1,"params":{"box_nm":29},"mics":{"F2_B1/a_001":{"done":false,"note":"","picks":[{"id":"x","x":2332.5,"y":3508.9,"label":"ring_top"},{"id":"y","x":10,"y":20,"label":"mystery"}]},"F2_B1/empty":{"picks":[]}}}"#
     let pjf = d2.appendingPathComponent("picks.json"); try? Data(pj.utf8).write(to: pjf)
-    plan = PickImporter.plan(files: [pjf], known: [kA, kB], currentKey: nil, scheme: .default, defaultLabel: "uncertain", asCandidates: false)
+    plan = PickImporter.plan(files: [pjf], known: [kA, kB], currentKey: nil, scheme: .views, defaultLabel: "uncertain", asCandidates: false)
     t.check(plan.picks[kA]?.count == 2 && plan.boxNm == 29 && plan.unknownLabels == ["mystery"] && plan.picks[kA]?.contains { $0.label == "uncertain" && $0.x == 10 } == true, "web picks.json import (labels mapped, unknown label -> default, box_nm)")
     let sj = #"{"v":1,"p":{"box_nm":26},"dec":{"F2_B1/a_001@3":{"d":"pick","l":"side","x":5.5,"y":6.5},"F2_B1/a_001@4":{"d":"reject","x":1,"y":1},"F2_B1/a_001@5":{"d":"pick","x":7,"y":8,"dc":1},"F2_B1/a_002@1":{"d":"unsure","x":9,"y":9},"F2_B1/a_002@2":{"d":"pick","x":3,"y":3}}}"#
     let sjf = d2.appendingPathComponent("swipe.json"); try? Data(sj.utf8).write(to: sjf)
-    plan = PickImporter.plan(files: [sjf], known: [kA, kB], currentKey: nil, scheme: .default, defaultLabel: "ring_top", asCandidates: false)
+    plan = PickImporter.plan(files: [sjf], known: [kA, kB], currentKey: nil, scheme: .views, defaultLabel: "ring_top", asCandidates: false)
     t.check(plan.picks[kA]?.count == 1 && plan.picks[kA]?[0].label == "side" && plan.picks[kB]?.count == 2 && Set(plan.picks[kB]!.map { $0.label }) == ["uncertain", "oligomer"], "swipe.json import: picks + unsure only; rejects and decoys skipped; default pick label 'oligomer'")
     // --- full round trip: export -> import into a fresh project reproduces the picks
     let rt = PickStore(); rt.saveDelay = 0; rt.openProject(folder: testTempDir())
@@ -768,7 +857,7 @@ func testGallery(_ t: inout TestRun) {
     let w = 20, h = 16
     let px: [Float] = (0..<(w * h)).map { Float($0 % w) * 10 + Float($0 / w) }          // x*10 + y ramp
     let th = renderThumb(pixels: px, width: w, height: h, cx: 9, cy: 7, boxPx: 8, out: 8, lo: 0, hi: 255)
-    // sample (i,j) at src x = 9 + ((i+.5)/8 - .5)*8 = 5 + i + .5?? -> positions are pixel *centres* of the thumb grid: x = 5.5 + i
+    // sample (i,j) at src x = 9 + ((i+.5)/8 - .5)*8 = 5 + i + .5?? -> positions are pixel *centers* of the thumb grid: x = 5.5 + i
     var exact = true
     for j in 0..<8 { for i in 0..<8 {
         let sx = 5.5 + Double(i), sy = 3.5 + Double(j)
@@ -935,16 +1024,17 @@ func testSwipe(_ t: inout TestRun) {
     let ids1 = sw.queue.map { $0.id }
     sw.rebuild(); t.check(sw.queue.map { $0.id } == ids1, "deck is deterministic per micrograph")
     sw.decoyRate = 0; sw.rebuild()                          // decision tests below use real cards only
-    // accept with recentring
+    // accept with recentering
     let first = sw.current!
-    sw.recentre(to: CGPoint(x: first.x + 6, y: first.y - 4))
-    t.check(sw.currentPoint == CGPoint(x: first.x + 6, y: first.y - 4), "click re-centres the cross")
+    sw.recenter(to: CGPoint(x: first.x + 6, y: first.y - 4))
+    t.check(sw.currentPoint == CGPoint(x: first.x + 6, y: first.y - 4), "click re-centers the cross")
     c.setActiveLabel("ring_top")
     sw.accept()
     let p1 = c.store.pick(first.id, in: k)!
-    t.check(p1.status == .accepted && p1.label == "ring_top" && p1.x == first.x + 6 && p1.y == first.y - 4 && sw.override == nil, "accept: status, active label and re-centred coordinates")
+    t.check(p1.status == .accepted && p1.label == "ring_top" && p1.x == first.x + 6 && p1.y == first.y - 4 && sw.override == nil, "accept: status, active label and re-centered coordinates")
     let d1 = c.store.record(k).swipe!.decisions.last!
-    t.check(d1.decision == "pick" && d1.recentred && !d1.decoy && d1.id == first.id && d1.ms != nil, "decision logged")
+    t.check(d1.decision == "pick" && d1.recentered && !d1.decoy && d1.id == first.id && d1.ms != nil, "decision logged")
+    t.check(String(data: (try? JSONEncoder().encode(d1)) ?? Data(), encoding: .utf8)?.contains("\"recentred\":true") == true, "decision JSON keeps the legacy key recentred")
     // reject, label accept, unsure, later
     let second = sw.current!; sw.reject()
     t.check(c.store.pick(second.id, in: k)?.status == .dismissed, "reject dismisses the candidate")

@@ -30,8 +30,15 @@ struct PickLabel: Codable, Identifiable, Equatable {
 struct LabelScheme: Codable, Equatable {
     var labels: [PickLabel]
 
-    /// Same six labels as the web picker.
-    static let `default` = LabelScheme(labels: [
+    /// Default for new projects: a quality / confidence rating that works on any micrograph.
+    static let quality = LabelScheme(labels: [
+        PickLabel(id: "good",   name: "Good",   key: "1", color: "#4dff6a"),
+        PickLabel(id: "maybe",  name: "Maybe",  key: "2", color: "#ffd400"),
+        PickLabel(id: "reject", name: "Reject", key: "3", color: "#9a9a9a", exported: false),
+    ])
+
+    /// Particle views (the web picker's six labels; ids are kept so web picks.json imports and old projects resolve).
+    static let views = LabelScheme(labels: [
         PickLabel(id: "ring_top",   name: "Ring (top view)",   key: "1", color: "#ff4d4d"),
         PickLabel(id: "side",       name: "Side / edge-on",    key: "2", color: "#ffd400"),
         PickLabel(id: "tilted",     name: "Tilted ring",       key: "3", color: "#35e0ff"),
@@ -40,14 +47,36 @@ struct LabelScheme: Codable, Equatable {
         PickLabel(id: "reject",     name: "Reject / negative", key: "6", color: "#9a9a9a", exported: false),
     ])
 
+    static let `default` = quality
+
+    /// Presets offered in the label editor.
+    static let presets: [(name: String, scheme: LabelScheme)] = [
+        ("Quality: Good / Maybe / Reject", quality),
+        ("Views: ring, side, tilted, other, uncertain, reject", views),
+    ]
+
+    /// Suggested destination for picks whose label is missing from a new scheme (nil = no sensible guess).
+    /// Only ever proposes a label that exists in `self`; the user confirms or changes it in the editor.
+    func suggestedTarget(forMissing id: String) -> String? {
+        let candidates: [String]
+        switch id {
+        case "reject": candidates = ["reject"]
+        case "uncertain": candidates = ["maybe"]
+        case "maybe": candidates = ["uncertain"]
+        case "ring_top", "side", "tilted", "oligomer": candidates = ["good"]
+        default: candidates = []
+        }
+        return candidates.first { label($0) != nil }
+    }
+
     /// Keys the viewer itself uses while picking.
-    static let reservedKeys: Set<String> = ["a", "b", "f", "g", "i", "p", "s", "v", ",", ".", "=", "+", "-"]
+    static let reservedKeys: Set<String> = ["a", "b", "f", "g", "i", "p", "s", "v", ",", ".", "=", "+", "-", "?", "/"]
 
     func label(_ id: String) -> PickLabel? { labels.first { $0.id == id } }
     func label(forKey k: String) -> PickLabel? { labels.first { $0.key.lowercased() == k.lowercased() } }
     var firstID: String { labels.first?.id ?? "particle" }
 
-    /// Problems that would make the scheme unusable (duplicate ids / hotkeys, bad colours, empty).
+    /// Problems that would make the scheme unusable (duplicate ids / hotkeys, bad colors, empty).
     func validate() -> [String] {
         var errs: [String] = []
         if labels.isEmpty { errs.append("no labels") }
@@ -57,7 +86,7 @@ struct LabelScheme: Codable, Equatable {
             if !ids.insert(l.id).inserted { errs.append("duplicate id '\(l.id)'") }
             if LabelScheme.reservedKeys.contains(l.key.lowercased()) { errs.append("hotkey '\(l.key)' is reserved") }
             if !l.key.isEmpty && !keys.insert(l.key.lowercased()).inserted { errs.append("duplicate hotkey '\(l.key)'") }
-            if parseHexColor(l.color) == nil { errs.append("bad colour '\(l.color)' for \(l.id)") }
+            if parseHexColor(l.color) == nil { errs.append("bad color '\(l.color)' for \(l.id)") }
         }
         return errs
     }

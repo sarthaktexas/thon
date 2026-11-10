@@ -135,6 +135,8 @@ final class PickStore: ObservableObject {
         return p.hasPrefix(r + "/") ? String(p.dropFirst(r.count + 1)) : p
     }
 
+    /// Test hook: replace the scheme without touching picks.
+    func setScheme_forTest(_ s: LabelScheme) { project.scheme = s }
     func setScheme(_ s: LabelScheme) {
         guard s != project.scheme else { return }
         project.scheme = s; touch(nil)
@@ -242,6 +244,41 @@ final class PickStore: ObservableObject {
     }
     @discardableResult func relabel(_ ids: Set<String>, to label: String, in key: String) -> Bool {
         perform(key, "Relabel") { l in for i in l.indices where ids.contains(l[i].id) { l[i].label = label } }
+    }
+    /// Sets or clears the "maybe" flag on the given picks (one undoable edit).
+    @discardableResult func setMaybe(_ ids: Set<String>, _ on: Bool, in key: String) -> Bool {
+        perform(key, on ? "Flag maybe" : "Clear maybe") { l in for i in l.indices where ids.contains(l[i].id) { l[i].maybe = on ? true : nil } }
+    }
+    func maybeCount(_ key: String) -> Int { picks(key).filter { $0.status == .accepted && $0.isMaybe }.count }
+
+    /// Number of live (non-dismissed) picks per label id across the whole project.
+    func labelUsage() -> [String: Int] {
+        var c: [String: Int] = [:]
+        for (_, r) in project.mics { for p in r.picks where p.status != .dismissed { c[p.label, default: 0] += 1 } }
+        return c
+    }
+
+    /// Replaces the scheme and moves picks of removed labels per `map` (old id -> new id) in one step.
+    /// A backup of the project is written first. Not undoable (per-micrograph undo history is cleared).
+    /// Picks (including dismissed ones) whose label is neither in `s` nor in `map` are left untouched, so callers must check first.
+    @discardableResult func replaceScheme(_ s: LabelScheme, remapping map: [String: String]) -> Int {
+        var moved = 0
+        if !map.isEmpty {
+            if projectURL != nil { save(forceBackup: true) }
+            for k in project.mics.keys {
+                var r = project.mics[k]!
+                var changed = false
+                for i in r.picks.indices {
+                    let l = r.picks[i].label
+                    if s.label(l) == nil, let t = map[l], s.label(t) != nil { r.picks[i].label = t; moved += 1; changed = true }
+                }
+                if changed { project.mics[k] = r; micRev[k, default: 0] += 1 }
+            }
+            undoStacks = [:]; redoStacks = [:]
+        }
+        project.scheme = s
+        touch(nil)
+        return moved
     }
     @discardableResult func setDiameter(_ ids: Set<String>?, nm: Double?, in key: String) -> Bool {
         perform(key, "Resize") { l in for i in l.indices where ids?.contains(l[i].id) ?? true { l[i].diameterNm = nm } }

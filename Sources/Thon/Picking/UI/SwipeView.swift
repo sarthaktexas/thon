@@ -75,7 +75,7 @@ struct SwipeView: View {
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(tint.opacity(0.2 + 0.8 * strength), lineWidth: 3))
         .offset(drag).rotationEffect(.degrees(Double(drag.width) / 25))
         .gesture(SpatialTapGesture().onEnded { v in
-            if let p = sw.point(atFraction: Double(v.location.x / side), Double(v.location.y / side)) { sw.recentre(to: p) }
+            if let p = sw.point(atFraction: Double(v.location.x / side), Double(v.location.y / side)) { sw.recenter(to: p) }
         })
         .simultaneousGesture(DragGesture(minimumDistance: 14)
             .onChanged { sw.dragOffset = $0.translation }
@@ -155,7 +155,7 @@ struct SwipeView: View {
                 Stepper("Cards/micrograph \(sw.depth)", value: $sw.depth, in: 20...1000, step: 20).font(.caption)
                 HStack { Text("Decoys").font(.caption); Slider(value: $sw.decoyRate, in: 0...0.2, step: 0.02).frame(width: 70) }
             }
-            Text("→ / Enter particle · 1–9 particle with that label · ← / X reject · ↑ / U unsure · ↓ / L later · Z undo · Space zoom out · click the card to move the cross onto the true centre. About 8% of cards are random spots (control); they are never exported.")
+            Text("→ / Enter particle · 1–9 particle with that label · ← / X reject · ↑ / U unsure · ↓ / L later · Z undo · Space zoom out · click the card to move the cross onto the true center. About 8% of cards are random spots (control); they are never exported.")
                 .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
     }

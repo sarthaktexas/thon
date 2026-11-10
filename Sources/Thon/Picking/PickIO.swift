@@ -272,6 +272,7 @@ enum ExportFormat: String, CaseIterable, Identifiable {
 struct ExportOptions {
     var formats: Set<ExportFormat> = [.relion, .csv]
     var onlyDone = false
+    var excludeMaybe = false                         // leave out picks flagged "maybe"
     var coordPrefix: String?                         // path written into coords_list_<label>.star (default: relative to the project)
 }
 
@@ -343,7 +344,7 @@ enum PickExporter {
         var order: [String] = []
         for (key, rec) in project.mics.sorted(by: { $0.key < $1.key }) {
             if options.onlyDone && !rec.done { continue }
-            let picks = rec.picks.filter { $0.status == .accepted && exportedIDs.contains($0.label) }
+            let picks = rec.picks.filter { $0.status == .accepted && exportedIDs.contains($0.label) && !(options.excludeMaybe && $0.isMaybe) }
             if picks.isEmpty { continue }
             sum.micrographs += 1
             let ds = dataset(for: key, rootName: rootName), mid = PickImporter.stem(key)
@@ -356,11 +357,11 @@ enum PickExporter {
             }
         }
         if options.formats.contains(.csv) {
-            var lines = ["dataset,micrograph,raw,angpix,pick,x_px,y_px,label,box_nm,box_px,score,source"]
+            var lines = ["dataset,micrograph,raw,angpix,pick,x_px,y_px,label,box_nm,box_px,score,source,maybe"]
             for r in rows {
                 let boxPx = r.angpix.map { fmt1(project.params.boxNm * 10 / $0) } ?? ""
                 lines.append([csvField(r.ds), csvField(r.mid), csvField(r.raw), fmtAngpix(r.angpix), String(r.n), fmt1(r.p.x), fmt1(r.p.y), csvField(r.p.label),
-                              String(project.params.boxNm), boxPx, r.p.score.map { String(format: "%.3f", $0) } ?? "", r.p.source.rawValue].joined(separator: ","))
+                              String(project.params.boxNm), boxPx, r.p.score.map { String(format: "%.3f", $0) } ?? "", r.p.source.rawValue, r.p.isMaybe ? "1" : "0"].joined(separator: ","))
             }
             try write(lines.joined(separator: "\n") + "\n", "all_picks.csv")
         }
@@ -399,7 +400,7 @@ func runExportCLI(_ args: [String]) -> Int32 {
         var o = ExportOptions()
         if args.contains("--eman") { o.formats.insert(.eman) }
         if args.contains("--no-csv") { o.formats.remove(.csv) }
-        o.onlyDone = args.contains("--done")
+        o.onlyDone = args.contains("--done"); o.excludeMaybe = args.contains("--exclude-maybe")
         let s = try PickExporter.export(project: proj, root: root, outDir: out, options: o)
         print("exported \(s.total) picks from \(s.micrographs) micrographs, \(s.files) files -> \(out.path)")
         return 0

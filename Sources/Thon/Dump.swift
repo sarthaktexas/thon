@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 
 /// Headless inspection: `Thon --dump file.dm4 [--tags] [--fft]`
 func runDump(_ args: [String]) {
@@ -31,6 +32,13 @@ func runDump(_ args: [String]) {
             if let ps = computePowerSpectrum(pixels: px, width: e.width, height: e.height) {
                 print(String(format: "fft n=%d  %.3fs", ps.n, Date().timeIntervalSince(t3)))
                 print("profile[1,2,5,10,50,100] =", [1, 2, 5, 10, 50, 100].map { ps.profile[$0] })
+                if let oi = args.firstIndex(of: "--fft-png"), oi + 1 < args.count {
+                    for (suffix, im) in [("log", ps.imageLog), ("norm", ps.imageNorm)] {
+                        guard let im, let d = CGImageDestinationCreateWithURL(URL(fileURLWithPath: args[oi + 1] + "_" + suffix + ".png") as CFURL, "public.png" as CFString, 1, nil) else { continue }
+                        CGImageDestinationAddImage(d, im, nil); CGImageDestinationFinalize(d)
+                    }
+                    print("wrote FFT pngs with prefix", args[oi + 1])
+                }
             }
         }
         let m = f.quickMeta()

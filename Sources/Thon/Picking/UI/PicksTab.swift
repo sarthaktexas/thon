@@ -119,6 +119,18 @@ struct PicksTab: View {
                 .contentShape(Rectangle())
                 .onTapGesture { pc.setActiveLabel(l.id) }
             }
+            if store.project.params.maybeFlag {
+                HStack {
+                    Text("? flagged maybe").font(.callout)
+                    Spacer()
+                    Text("\(key.map { store.maybeCount($0) } ?? 0)").monospacedDigit()
+                    Text("/ \(store.project.mics.values.reduce(0) { $0 + $1.picks.filter { $0.status == .accepted && $0.isMaybe }.count })")
+                        .monospacedDigit().foregroundStyle(.secondary).font(.caption)
+                    Text("?").font(.system(.caption, design: .monospaced)).padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 3))
+                }
+                .padding(.horizontal, 6).padding(.vertical, 3)
+            }
             HStack {
                 Text("this micrograph / all").font(.caption).foregroundStyle(.secondary)
                 Spacer()
@@ -173,7 +185,7 @@ struct PicksTab: View {
                 Text("\(m.source): \(m.matchedRows) of \(m.rows) particles matched · \(m.unclassifiedPicks) picks have no class")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
-                    Toggle("Colour picks by class", isOn: $pc.showClassColors)
+                    Toggle("Color picks by class", isOn: $pc.showClassColors)
                     Spacer()
                     Stepper("tol \(Int(pc.classTolerance)) px", value: $pc.classTolerance, in: 1...30).onChange(of: pc.classTolerance) { _, _ in pc.reloadClasses() }
                         .font(.caption)
@@ -199,7 +211,7 @@ struct PicksTab: View {
                 }
                 Button("Clear classification") { pc.clearClasses() }.controlSize(.small)
             } else {
-                Text("Load a RELION run_itNNN_data.star to colour picks by the class they landed in; class averages are shown if run_itNNN_classes.mrcs is next to it. Junk classes can be selected, relabelled or removed on all micrographs.")
+                Text("Load a RELION run_itNNN_data.star to color picks by the class they landed in; class averages are shown if run_itNNN_classes.mrcs is next to it. Junk classes can be selected, relabeled or removed on all micrographs.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -212,6 +224,7 @@ struct PicksTab: View {
                                                  set: { if $0 { pc.exportFormats.insert(f) } else { pc.exportFormats.remove(f) } }))
             }
             Toggle("Only micrographs marked Done", isOn: $pc.exportOnlyDone)
+            if store.project.params.maybeFlag { Toggle("Leave out picks flagged maybe", isOn: $pc.exportExcludeMaybe) }
             HStack {
                 Button("Export…") { PickPanels.chooseExport(model: model) }
                 Button("Import…") { PickPanels.chooseImport(model: model, asCandidates: false) }
@@ -330,11 +343,32 @@ struct LabelEditor: View {
             }.frame(minHeight: 200)
             HStack {
                 Button("Add label") { pc.addDraftLabel() }
-                Button("Reset to defaults") { pc.draftScheme = .default }
+                Menu("Presets") {
+                    ForEach(Array(LabelScheme.presets.enumerated()), id: \.offset) { _, p in
+                        Button(p.name) { pc.loadDraftPreset(p.scheme) }
+                    }
+                }.fixedSize()
                 Button("Load labels.json…") { pc.loadDraftSchemeFromFile() }
                 Button("Save labels.json") { pc.saveDraftSchemeToFile() }
             }
-            Text("Label ids are fixed once created (they appear in exports); rename the display name freely. Hotkeys A, B, F, G, I, P, S, V and , . = + - are reserved.")
+            Toggle("Enable the per-pick \"maybe\" flag (key ?), independent of the label", isOn: $pc.draftMaybeFlag)
+            let missing = pc.draftMissingLabels
+            if !missing.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("These labels are dropped but still have picks. Choose where those picks go:").font(.caption).foregroundStyle(.orange)
+                    ForEach(missing, id: \.id) { m in
+                        HStack {
+                            Text("\(m.count) × \(m.id)").font(.system(.caption, design: .monospaced)).frame(width: 150, alignment: .leading)
+                            Image(systemName: "arrow.right")
+                            Picker("", selection: Binding(get: { pc.draftRemap[m.id] ?? "" }, set: { pc.draftRemap[m.id] = $0 })) {
+                                Text("choose…").tag("")
+                                ForEach(pc.draftScheme.labels) { Text($0.name).tag($0.id) }
+                            }.labelsHidden().frame(width: 220)
+                        }
+                    }
+                }
+            }
+            Text("Label ids are fixed once created (they appear in exports); rename the display name freely. Hotkeys A, B, F, G, I, P, S, V and , . = + - ? / are reserved.")
                 .font(.caption).foregroundStyle(.secondary)
             if let e = pc.schemeError { Text(e).font(.caption).foregroundStyle(.red) }
             HStack {
@@ -343,6 +377,6 @@ struct LabelEditor: View {
                 Button("Apply") { pc.applyDraftScheme() }.keyboardShortcut(.defaultAction)
             }
         }
-        .padding(16).frame(width: 760, height: 420)
+        .padding(16).frame(width: 760, height: 500)
     }
 }

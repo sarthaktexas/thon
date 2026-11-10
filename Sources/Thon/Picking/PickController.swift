@@ -15,12 +15,14 @@ final class PickController: ObservableObject {
     @Published var showScores = false
     @Published var showCandidates = true
     @Published var scoreCutoff: Float = 0
-    @Published var activeLabel = LabelScheme.default.firstID
+    @Published var activeLabel = PickProject.newProjectScheme.firstID
     @Published var selection = Set<String>()
     @Published var hiddenLabels = Set<String>()
     @Published var boxRect: CGRect?                 // rubber band, pick coordinates
     @Published var showLabelEditor = false
     @Published var draftScheme = LabelScheme.default
+    @Published var draftMaybeFlag = false
+    @Published var draftRemap: [String: String] = [:]     // removed label id -> label id that takes over its picks
     @Published var schemeError: String?
     @Published var imageSize = CGSize.zero
     @Published var pixelSizeA: Double?
@@ -264,7 +266,7 @@ final class PickController: ObservableObject {
         return drop.count
     }
 
-    /// Removes picks whose centre lies within `marginPx` of the image border (default: half the extraction box).
+    /// Removes picks whose center lies within `marginPx` of the image border (default: half the extraction box).
     @discardableResult
     func removeEdgePicks(marginPx: Double? = nil) -> Int {
         guard let k = currentKey else { return 0 }
@@ -331,6 +333,7 @@ final class PickController: ObservableObject {
 
     @Published var exportFormats: Set<ExportFormat> = [.relion, .csv]
     @Published var exportOnlyDone = false
+    @Published var exportExcludeMaybe = false
     @Published var ioMessage: String?
 
     var defaultExportFolder: URL? { store.root?.appendingPathComponent("picks_export") }
@@ -339,7 +342,7 @@ final class PickController: ObservableObject {
     func exportPicks(to folder: URL) -> ExportSummary? {
         guard let root = store.root else { return nil }
         store.save()
-        var o = ExportOptions(); o.formats = exportFormats; o.onlyDone = exportOnlyDone
+        var o = ExportOptions(); o.formats = exportFormats; o.onlyDone = exportOnlyDone; o.excludeMaybe = exportExcludeMaybe
         do {
             let s = try PickExporter.export(project: store.project, root: root, outDir: folder, options: o)
             let per = store.scheme.labels.compactMap { l in s.totals[l.id].map { "\(l.name) \($0)" } }.joined(separator: ", ")
@@ -364,7 +367,10 @@ final class PickController: ObservableObject {
 
     // MARK: label editor
 
-    func openLabelEditor() { draftScheme = store.scheme; schemeError = nil; showLabelEditor = true }
+    func openLabelEditor() {
+        draftScheme = store.scheme; draftMaybeFlag = store.project.params.maybeFlag; draftRemap = [:]
+        schemeError = nil; showLabelEditor = true
+    }
 
     func addDraftLabel() {
         var n = draftScheme.labels.count + 1
@@ -374,19 +380,36 @@ final class PickController: ObservableObject {
         draftScheme.labels.append(PickLabel(id: "label_\(n)", name: "Label \(n)", key: key, color: "#4da3ff"))
     }
 
-    /// Validates and applies the edited scheme; refuses removal of labels that still have picks.
+    /// Labels that still have picks in the project but are absent from the draft: id -> pick count.
+    var draftMissingLabels: [(id: String, count: Int)] {
+        let ids = Set(draftScheme.labels.map { $0.id })
+        return store.labelUsage().filter { !ids.contains($0.key) }.map { (id: $0.key, count: $0.value) }.sorted { $0.id < $1.id }
+    }
+
+    /// Loads a preset into the editor and pre-fills a sensible destination for every label the preset drops.
+    func loadDraftPreset(_ s: LabelScheme) {
+        draftScheme = s; draftRemap = [:]; schemeError = nil
+        for m in draftMissingLabels { if let t = s.suggestedTarget(forMissing: m.id) { draftRemap[m.id] = t } }
+    }
+
+    /// Validates and applies the edited scheme. Labels that still have picks can only be dropped if the editor
+    /// maps them onto a label that remains; otherwise nothing is changed.
     func applyDraftScheme() {
         var errs = draftScheme.validate()
         let ids = Set(draftScheme.labels.map { $0.id })
-        var used = Set<String>()
-        for (_, r) in store.project.mics { for p in r.picks where p.status != .dismissed { used.insert(p.label) } }
-        let missing = used.subtracting(ids)
-        if !missing.isEmpty { errs.append("labels still in use cannot be removed: \(missing.sorted().joined(separator: ", "))") }
+        var map: [String: String] = [:]
+        var unresolved: [String] = []
+        for m in draftMissingLabels {
+            if let t = draftRemap[m.id], ids.contains(t) { map[m.id] = t } else { unresolved.append(m.id) }
+        }
+        if !unresolved.isEmpty { errs.append("labels still in use cannot be removed (choose where their picks go): \(unresolved.joined(separator: ", "))") }
         guard errs.isEmpty else { schemeError = errs.joined(separator: "; "); return }
-        store.setScheme(draftScheme)
+        store.replaceScheme(draftScheme, remapping: map)
+        if store.project.params.maybeFlag != draftMaybeFlag { var p = store.project.params; p.maybeFlag = draftMaybeFlag; store.setParams(p) }
         if store.scheme.label(activeLabel) == nil { activeLabel = store.scheme.firstID }
         hiddenLabels.formIntersection(ids)
-        schemeError = nil; showLabelEditor = false
+        pruneSelection()
+        schemeError = nil; draftRemap = [:]; showLabelEditor = false
     }
 
     func schemeFileURL() -> URL? { store.root?.appendingPathComponent(PickStore.schemeFileName) }
@@ -426,6 +449,13 @@ final class PickController: ObservableObject {
         let ids = Set(store.picks(k).filter { $0.status == .candidate }.map { $0.id })
         if !ids.isEmpty { store.setStatus(ids, .dismissed, in: k) }
     }
+    /// Toggles the "maybe" flag on the selection (if any are unflagged, flags all; otherwise clears). Only when the flag is enabled.
+    func toggleMaybe() {
+        guard store.project.params.maybeFlag, let k = currentKey, !selection.isEmpty else { return }
+        let sel = selectedPicks.filter { $0.status != .dismissed }
+        guard !sel.isEmpty else { return }
+        store.setMaybe(Set(sel.map { $0.id }), sel.contains { !$0.isMaybe }, in: k)
+    }
     func selectAll() { selection = Set(visiblePicks.map { $0.id }) }
     func clearSelection() { selection = [] }
     func undo() { if let k = currentKey { store.undo(k); pruneSelection() } }
@@ -453,6 +483,7 @@ final class PickController: ObservableObject {
         let c = chars.lowercased()
         if let l = store.scheme.label(forKey: c) { setActiveLabel(l.id); return true }
         switch c {
+        case "?", "/": toggleMaybe(); return store.project.params.maybeFlag
         case "a": acceptAllCandidates(); return true
         case "v": showMarkers.toggle(); return true
         case "b": showBoxes.toggle(); return true

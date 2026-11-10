@@ -9,9 +9,15 @@ struct SwipeDecision: Codable, Equatable {
     var label: String?
     var x: Double, y: Double
     var decoy = false
-    var recentred = false
+    var recentered = false
     var ms: Int?                      // dwell time
     var t: Double?                    // epoch seconds
+
+    /// The persisted / exported key stays `recentred`, as written by the web picker, so existing logs keep loading.
+    enum CodingKeys: String, CodingKey {
+        case id, decision, label, x, y, decoy, ms, t
+        case recentered = "recentred"
+    }
 }
 
 struct SwipeLog: Codable, Equatable {
@@ -25,7 +31,7 @@ struct SwipeLog: Codable, Equatable {
 
 struct SwipeStats: Equatable {
     var cards = 0, pick = 0, reject = 0, unsure = 0
-    var decoySeen = 0, decoyPick = 0, realSeen = 0, realPick = 0, recentred = 0
+    var decoySeen = 0, decoyPick = 0, realSeen = 0, realPick = 0, recentered = 0
     var pickRateReal: Double? { realSeen > 0 ? Double(realPick) / Double(realSeen) : nil }
     var pickRateDecoy: Double? { decoySeen > 0 ? Double(decoyPick) / Double(decoySeen) : nil }
 
@@ -34,7 +40,7 @@ struct SwipeStats: Equatable {
         for l in logs { for d in l.decisions {
             s.cards += 1
             switch d.decision { case "pick": s.pick += 1; case "reject": s.reject += 1; default: s.unsure += 1 }
-            if d.recentred { s.recentred += 1 }
+            if d.recentered { s.recentered += 1 }
             if d.decoy { s.decoySeen += 1; if d.decision == "pick" { s.decoyPick += 1 } }
             else { s.realSeen += 1; if d.decision == "pick" { s.realPick += 1 } }
         } }
@@ -60,14 +66,14 @@ final class SwipeSession: ObservableObject {
     @Published var windowNm = 45.0
     @Published var zoomedOut = false
     @Published var showBox = true
-    @Published var override: CGPoint?                          // re-centred position of the current card
+    @Published var override: CGPoint?                          // re-centered position of the current card
     @Published var decoyRate = 0.08
     @Published var depth = 100
     @Published private(set) var revision = 0
     @Published var dragOffset = CGSize.zero                    // live card offset while dragging (UI)
     private var windowCache: (key: String, count: Int, lo: Float, hi: Float)?
     private(set) var shownAt = Date()
-    private var history: [(card: Card, kind: String, key: String, serial: Int?, wasRecentred: Bool)] = []
+    private var history: [(card: Card, kind: String, key: String, serial: Int?, wasRecentered: Bool)] = []
     private var bag = Set<AnyCancellable>()
 
     init(pc: PickController) { self.pc = pc }
@@ -88,7 +94,7 @@ final class SwipeSession: ObservableObject {
         return w
     }
 
-    /// Card thumbnail (8-bit gray, `out` x `out`) for the current card; the crop is centred on the card, not on the re-centred cross.
+    /// Card thumbnail (8-bit gray, `out` x `out`) for the current card; the crop is centered on the card, not on the re-centered cross.
     func cardImage(out: Int, smooth: Double = 1) -> [UInt8]? {
         guard let c = current, !pc.pixels.isEmpty else { return nil }
         let w = displayWindow()
@@ -134,10 +140,10 @@ final class SwipeSession: ObservableObject {
 
     // MARK: decisions
 
-    private func record(_ c: Card, _ decision: String, label: String?, at p: CGPoint, recentred: Bool) {
+    private func record(_ c: Card, _ decision: String, label: String?, at p: CGPoint, recentered: Bool) {
         guard let key = pc.currentKey else { return }
         var log = pc.store.record(key).swipe ?? SwipeLog()
-        log.decisions.append(SwipeDecision(id: c.id, decision: decision, label: label, x: p.x, y: p.y, decoy: c.decoy, recentred: recentred,
+        log.decisions.append(SwipeDecision(id: c.id, decision: decision, label: label, x: p.x, y: p.y, decoy: c.decoy, recentered: recentered,
                                            ms: Int(Date().timeIntervalSince(shownAt) * 1000), t: Date().timeIntervalSince1970))
         pc.store.setSwipe(key, log)
     }
@@ -157,7 +163,7 @@ final class SwipeSession: ObservableObject {
             }
             serial = pc.store.topSerial(key)
         }
-        record(c, "pick", label: lab, at: p, recentred: rc)
+        record(c, "pick", label: lab, at: p, recentered: rc)
         history.append((c, "pick", key, serial, rc)); advance()
     }
 
@@ -165,7 +171,7 @@ final class SwipeSession: ObservableObject {
         guard let key = pc.currentKey, let c = current, let p = currentPoint else { return }
         var serial: Int?
         if !c.decoy { pc.store.setStatus([c.id], .dismissed, in: key); serial = pc.store.topSerial(key) }
-        record(c, "reject", label: nil, at: p, recentred: false)
+        record(c, "reject", label: nil, at: p, recentered: false)
         history.append((c, "reject", key, serial, false)); advance()
     }
 
@@ -182,7 +188,7 @@ final class SwipeSession: ObservableObject {
             }
             serial = pc.store.topSerial(key)
         }
-        record(c, "unsure", label: lab, at: p, recentred: rc)
+        record(c, "unsure", label: lab, at: p, recentered: rc)
         history.append((c, "unsure", key, serial, rc)); advance()
     }
 
@@ -193,7 +199,7 @@ final class SwipeSession: ObservableObject {
         history.append((c, "later", pc.currentKey ?? "", nil, false))
     }
 
-    func recentre(to p: CGPoint) { if current != nil { override = p; revision += 1 } }
+    func recenter(to p: CGPoint) { if current != nil { override = p; revision += 1 } }
 
     func undo() {
         guard let h = history.popLast() else { return }
@@ -224,12 +230,12 @@ extension PickExporter {
         guard logs.contains(where: { !$0.1.decisions.isEmpty }) else { return [] }
         var lines = ["card_id,decision,label,x_px,y_px,recentred,decoy,dwell_ms,time"]
         for (k, l) in logs { for d in l.decisions {
-            lines.append([csvField("\(k)@\(d.id)"), d.decision, d.label ?? "", fmt1(d.x), fmt1(d.y), d.recentred ? "1" : "0", d.decoy ? "1" : "0",
+            lines.append([csvField("\(k)@\(d.id)"), d.decision, d.label ?? "", fmt1(d.x), fmt1(d.y), d.recentered ? "1" : "0", d.decoy ? "1" : "0",
                           d.ms.map(String.init) ?? "", d.t.map { String(Int($0)) } ?? ""].joined(separator: ","))
         } }
         let s = SwipeStats.compute(logs.map { $0.1 })
         func r(_ v: Double?) -> String { v.map { String(format: "%.4f", $0) } ?? "null" }
-        let json = "{\n \"cards\": \(s.cards),\n \"pick\": \(s.pick),\n \"reject\": \(s.reject),\n \"unsure\": \(s.unsure),\n \"decoy_seen\": \(s.decoySeen),\n \"decoy_pick\": \(s.decoyPick),\n \"real_seen\": \(s.realSeen),\n \"real_pick\": \(s.realPick),\n \"recentred\": \(s.recentred),\n \"pick_rate_real\": \(r(s.pickRateReal)),\n \"pick_rate_decoy\": \(r(s.pickRateDecoy))\n}\n"
+        let json = "{\n \"cards\": \(s.cards),\n \"pick\": \(s.pick),\n \"reject\": \(s.reject),\n \"unsure\": \(s.unsure),\n \"decoy_seen\": \(s.decoySeen),\n \"decoy_pick\": \(s.decoyPick),\n \"real_seen\": \(s.realSeen),\n \"real_pick\": \(s.realPick),\n \"recentred\": \(s.recentered),\n \"pick_rate_real\": \(r(s.pickRateReal)),\n \"pick_rate_decoy\": \(r(s.pickRateDecoy))\n}\n"
         return [("swipe_decisions.csv", lines.joined(separator: "\n") + "\n"), ("swipe_stats.json", json)]
     }
 }

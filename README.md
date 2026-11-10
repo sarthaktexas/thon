@@ -1,7 +1,7 @@
 # Thon
 
 Native macOS micrograph viewer for Gatan DigitalMicrograph `.dm3` / `.dm4` files and `.mrc` / `.mrcs` micrographs, laid out like the cryoSPARC
-exposure viewer: exposure list on the left, GPU-rendered image in the centre, inspector on the right. Includes a particle picker
+exposure viewer: exposure list on the left, GPU-rendered image in the center, inspector on the right. Includes a particle picker
 (auto-pick, manual editing, gallery, swipe mode, RELION class back-mapping): see [docs/PICKER_GUIDE.md](docs/PICKER_GUIDE.md).
 
 * Swift 5 / SwiftUI shell, Metal (MetalKit) renderer, Accelerate (vDSP) FFT, Swift Charts. No third-party dependencies.
@@ -42,7 +42,7 @@ rendering, invert) and exits non-zero on failure. It then runs the CPU logic tes
 * Image: pan (drag), zoom at cursor (wheel / pinch), double-click or `F` to fit, `1` for 100 %, `I` invert, ←/→ previous/next. Scale bar from the calibration, cursor position (px and nm) and raw pixel value.
 * Display: auto contrast (percentile or mean ± nσ) or manual black/white points, gamma, invert; GPU Gaussian low-pass and large-scale background flattening.
 * Overview tab: histogram with the contrast window, plus File / Image / Acquisition / Microscope / Session sections pulled from the DM tags (pixel size, FOV, mean signal in e⁻/Å² when the intensity calibration is in electrons, camera, exposure, binning, drift, voltage, magnification, stage, …).
-* FFT tab: power spectrum of the centre crop (power of two, Hann window) with resolution rings in Å, optional division by the radial mean to make Thon rings visible, and radial profile.
+* FFT tab: power spectrum of the center crop (power of two, Hann window) with resolution rings in Å, optional division by the radial mean to make Thon rings visible, and radial profile.
 * Tags tab: every tag in the file, filterable.
 * Export: PNG (current contrast), MRC float32 raw or filtered (rows flipped to MRC bottom-left origin; pixel size written to the cell). Note: the picker reads MRC files as stored (row 0 on top, like RELION / mrcfile), so an MRC exported from here appears upside down relative to the DM view if you open it again.
 

@@ -112,12 +112,12 @@ func runSelfTest() -> Int32 {
     if let px = r.renderOffscreen(width: 64, height: 48) {
         let i = (24 * 64 + 32) * 4
         let want = gray(img[100 * W + 150])
-        check("render nearest-neighbour (zoom 3)", abs(Int(px[i]) - want) <= 1 && abs(Int(px[i + 2]) - want) <= 1, "got \(px[i]) want \(want)")
-    } else { check("render nearest-neighbour", false, "offscreen render failed") }
+        check("render nearest-neighbor (zoom 3)", abs(Int(px[i]) - want) <= 1 && abs(Int(px[i + 2]) - want) <= 1, "got \(px[i]) want \(want)")
+    } else { check("render nearest-neighbor", false, "offscreen render failed") }
 
     vs.zoom = 3; vs.center = CGPoint(x: -50, y: -50)
     if let px = r.renderOffscreen(width: 64, height: 48) {
-        check("render surround colour outside image", abs(Int(px[0]) - 22) <= 1 && abs(Int(px[2]) - 19) <= 1, "BGR = \(px[0]),\(px[1]),\(px[2])")
+        check("render surround color outside image", abs(Int(px[0]) - 22) <= 1 && abs(Int(px[2]) - 19) <= 1, "BGR = \(px[0]),\(px[1]),\(px[2])")
     } else { check("render surround", false, "offscreen render failed") }
 
     vs.zoom = 0.5; vs.center = CGPoint(x: 150, y: 100)

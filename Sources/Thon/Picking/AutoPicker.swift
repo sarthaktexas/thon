@@ -50,7 +50,7 @@ struct AutoCandidate: Equatable { var x: Double; var y: Double; var score: Float
 
 /// CPU auto-picker (Foundation only). Pipeline: bin -> flatten -> robust z-score -> polarity ->
 /// smooth -> score (bright core minus annulus, or difference-of-Gaussians blob) -> robust z of the score ->
-/// local maxima with minimum separation. Coordinates are pick coordinates (array indices, pixel centre = integer).
+/// local maxima with minimum separation. Coordinates are pick coordinates (array indices, pixel center = integer).
 enum AutoPicker {
     // MARK: primitives (also used by tests)
 
@@ -213,7 +213,7 @@ enum AutoPicker {
                     var isMax = true
                     outer: for dy in -1...1 { for dx in -1...1 where dx != 0 || dy != 0 {
                         let o = d[(y + dy) * w + x + dx]
-                        // strict on the "earlier" half of the neighbourhood so plateaus yield one peak
+                        // strict on the "earlier" half of the neighborhood so plateaus yield one peak
                         if o > v || (o == v && (dy < 0 || (dy == 0 && dx < 0))) { isMax = false; break outer }
                     } }
                     if isMax { peaks.append((v, x, y)) }
@@ -239,7 +239,7 @@ enum AutoPicker {
             if ok { occ[key(cx, cy), default: []].append(kept.count); kept.append(pk) }
         }
         return kept.map { (v, x, y) in
-            // sub-pixel refinement: centroid of the positive scores in the 3x3 neighbourhood
+            // sub-pixel refinement: centroid of the positive scores in the 3x3 neighborhood
             var sx = 0.0, sy = 0.0, sw = 0.0
             for dy in -1...1 { for dx in -1...1 {
                 let xx = x + dx, yy = y + dy

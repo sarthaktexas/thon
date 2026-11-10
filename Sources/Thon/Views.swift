@@ -383,7 +383,7 @@ struct FFTTab: View {
             VStack(spacing: 10) {
                 if let ps = model.fft, let doc = model.doc {
                     let pa = doc.entry.pixelSizeA
-                    Card(title: "Power spectrum (\(ps.n)×\(ps.n) centre crop, Hann window)") {
+                    Card(title: "Power spectrum (\(ps.n)×\(ps.n) center crop, Hann window)") {
                         Toggle("Divide by radial mean (enhance rings)", isOn: $model.fftNormalize)
                         GeometryReader { geo in
                             let s = geo.size.width

@@ -1,14 +1,14 @@
 # Particle picker – design notes
 
 Goal: pick, label and clean particles inside Thon. Auto-pick first, then edit (resize, remove junk,
-relabel). Modelled on an earlier browser-based picker used for 2D-class curation (labels 1-6, autosave,
+relabel). Modeled on an earlier browser-based picker used for 2D-class curation (labels 1-6, autosave,
 RELION .star export, gallery, swipe mode).
 
 ## Hooks in the existing code (audit)
 | Need | Where |
 |---|---|
 | Image pixels, size, Å/px | `AppModel.doc` (`LoadedExposure.pixels`, `.entry.width/height/pixelSizeA`) |
-| Pan/zoom transform | `ViewState`: `zoom` = drawable px per image px, `center` = image px at view centre, `viewPixels` (drawable px), `backingScale`. Screen point (pt) -> image px: `img = center + (pt*backingScale - viewPixels/2)/zoom` |
+| Pan/zoom transform | `ViewState`: `zoom` = drawable px per image px, `center` = image px at view center, `viewPixels` (drawable px), `backingScale`. Screen point (pt) -> image px: `img = center + (pt*backingScale - viewPixels/2)/zoom` |
 | Mouse events | `InteractiveMTKView` (MetalView.swift): drag=pan, wheel=zoom. Needs a pick-tool mode that intercepts click/drag |
 | Keys | `AppModel.handleKey` – digits 1-6 are currently "zoom 100 %" for `1`; picker mode takes precedence for digits |
 | Overlays | `ImagePane` ZStack (Views.swift) – picks overlay is added between `MicrographView` and header/scale bar |
@@ -21,7 +21,7 @@ Core logic (MRC, picks, auto-picker, IO) uses Foundation/Accelerate only so it c
 (`PickTests.swift`, `--picktest`).
 
 ## Coordinate convention
-* Picks are stored in **native pixels of the micrograph array, origin top-left, x right, y down**; pixel centres are at integer
+* Picks are stored in **native pixels of the micrograph array, origin top-left, x right, y down**; pixel centers are at integer
   values, so a pick at (x, y) refers to array element `[row=y, col=x]` (same as numpy/mrcfile, RELION `_rlnCoordinateX/Y` and the web
   picker's `picks.json`). The viewer's continuous image coordinates (pixel i spans [i, i+1)) differ by 0.5: pick = viewer − 0.5.
 * DM3/DM4 data are stored top-down, so no flip. MRC files are read **as stored** (row 0 on top, no flip), as the
@@ -43,11 +43,11 @@ Project    { version, scheme, params{box_nm, diameter_nm}, mics{ key -> MicRecor
 ## LabelScheme
 `labels.json` next to the project (or inside `picks_project.json`). Default preset = the web picker's six labels:
 `ring_top 1 #ff4d4d`, `side 2 #ffd400`, `tilted 3 #35e0ff`, `oligomer 4 #4dff6a`, `uncertain 5 #ff7bf5`,
-`reject 6 #9a9a9a`. Each label: id, name, hotkey (1-9), colour, marker shape (circle|box|cross|ring), exported (bool).
-Editable in the Picks tab (add/remove/rename/recolour/reorder) and by hand in JSON.
+`reject 6 #9a9a9a`. Each label: id, name, hotkey (1-9), color, marker shape (circle|box|cross|ring), exported (bool).
+Editable in the Picks tab (add/remove/rename/recolor/reorder) and by hand in JSON.
 
 ## Auto-picker (CPU, Accelerate)
-1. Optional flatten (large-sigma Gaussian subtract) and robust z-score normalisation (MAD).
+1. Optional flatten (large-sigma Gaussian subtract) and robust z-score normalization (MAD).
 2. Smooth at `sigma` px.
 3. Score map: `core` = mean(core r) - mean(annulus r1..r2) (bright-core, as the F4 picker) or `LoG` at the
    particle scale. Polarity switch (bright/dark particles).

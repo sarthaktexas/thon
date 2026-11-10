@@ -5,7 +5,7 @@ Open a folder of micrographs (`.mrc`, `.mrcs`, `.dm3`, `.dm4`). The folder becom
 Press **P** (or the Pick toolbar button) to enter pick mode; the **Picks** tab of the inspector holds all controls.
 
 ## Coordinates
-Pick coordinates are array indices of the micrograph: x = column, y = row, origin top-left, y down, pixel centres at integer
+Pick coordinates are array indices of the micrograph: x = column, y = row, origin top-left, y down, pixel centers at integer
 values. No y flip. MRC files are read as stored (row 0 on top), the same convention as numpy/mrcfile, RELION `_rlnCoordinateX/Y`
 and the web picker. Sizes are kept in nm and converted with the pixel size of each micrograph (uncalibrated files assume 1 Å/px).
 
@@ -17,9 +17,9 @@ and the web picker. Sizes are kept in nm and converted with the pixel size of ea
 3. **Clean up**: click a ghost to accept it, right-click or ⌫ to remove, drag to move, shift-drag to box-select, `1`–`6` to label,
    `,` / `.` to resize (selection or default), *Remove overlaps*, *Remove edge picks*, score cutoff + *Dismiss hidden*, `A` accept all shown.
 4. **Review** with the **Gallery** (G): crops grouped by label (this micrograph or all), relabel / delete / accept, double-click to jump to the pick.
-   **Swipe mode** (S): one card per candidate, → particle, ← reject, ↑ unsure, ↓ later, 1–9 label, click to re-centre, Space zoom out, Z undo.
+   **Swipe mode** (S): one card per candidate, → particle, ← reject, ↑ unsure, ↓ later, 1–9 label, click to re-center, Space zoom out, Z undo.
    About 8 % of cards are blind random spots (control); they are logged, never exported.
-5. **Classes**: *Load classification…* with a RELION `run_itNNN_data.star` colours every pick by its class (average shown if
+5. **Classes**: *Load classification…* with a RELION `run_itNNN_data.star` colors every pick by its class (average shown if
    `run_itNNN_classes.mrcs` is next to it). Select, relabel or remove a whole class on all micrographs.
 6. **Export**: RELION, CSV, EMAN. Mark micrographs *Done* and export only those if needed.
 
@@ -45,7 +45,7 @@ Reserved (cannot be label hotkeys): A B F G I P S V , . = + -.
 
 ## Labels
 Default labels are the web picker's: ring_top, side, tilted, oligomer, uncertain, reject (reject is not exported). Edit them in
-*Edit labels…* (name, colour, hotkey, marker shape, exported flag) or by hand in `labels.json` in the project folder; a valid
+*Edit labels…* (name, color, hotkey, marker shape, exported flag) or by hand in `labels.json` in the project folder; a valid
 `labels.json` is used when a new project is created. Label ids are permanent (they appear in exports); labels that still have
 picks cannot be removed.
 
@@ -63,7 +63,7 @@ has the same first ten columns plus `score`, `source`. `coords_list_*.star` uses
 folder relative to the project), so copy the folder into the RELION project or edit the prefix. A re-export deletes only the files the
 previous export wrote (`.export_manifest.json`) and never anything else.
 
-EMAN `.box`: x, y = box corner (centre − box/2), box size in px, origin top-left, y down. This convention is not verified against the EMAN GUI.
+EMAN `.box`: x, y = box corner (center − box/2), box size in px, origin top-left, y down. This convention is not verified against the EMAN GUI.
 
 ## Import
 File ▸ Picks ▸ *Import Picks…* accepts RELION coordinate `.star` (or `coords_list.star`, following the files it lists), CSV with

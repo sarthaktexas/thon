@@ -48,6 +48,10 @@ struct PickOverlay: View {
                     ctx.stroke(Path(CGRect(x: c.x - boxPts / 2, y: c.y - boxPts / 2, width: boxPts, height: boxPts)),
                                with: .color(color.opacity(0.55)), lineWidth: 1)
                 }
+                if p.isMaybe && store.project.params.maybeFlag {
+                    ctx.draw(Text("?").font(.system(size: max(10, min(18, r * 0.9)), weight: .bold, design: .monospaced)).foregroundColor(color),
+                             at: CGPoint(x: c.x, y: c.y))
+                }
                 if pc.showScores, let s = p.score {
                     ctx.draw(Text(String(format: "%.1f", s)).font(.system(size: 10, design: .monospaced)).foregroundColor(.white),
                              at: CGPoint(x: c.x, y: c.y - r - 7))

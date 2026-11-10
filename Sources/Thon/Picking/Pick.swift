@@ -16,11 +16,13 @@ struct Pick: Codable, Identifiable, Equatable {
     var source: PickSource
     var status: PickStatus
     var diameterNm: Double?          // overrides the project default when set
+    var maybe: Bool?                 // optional "not sure" flag, independent of the label (nil = not flagged)
+    var isMaybe: Bool { maybe == true }
 
     init(id: String = Pick.newID(), x: Double, y: Double, label: String, score: Float? = nil,
-         source: PickSource = .manual, status: PickStatus = .accepted, diameterNm: Double? = nil) {
+         source: PickSource = .manual, status: PickStatus = .accepted, diameterNm: Double? = nil, maybe: Bool? = nil) {
         self.id = id; self.x = x; self.y = y; self.label = label; self.score = score
-        self.source = source; self.status = status; self.diameterNm = diameterNm
+        self.source = source; self.status = status; self.diameterNm = diameterNm; self.maybe = maybe
     }
 
     init(from d: Decoder) throws {
@@ -32,6 +34,7 @@ struct Pick: Codable, Identifiable, Equatable {
         source = try c.decodeIfPresent(PickSource.self, forKey: .source) ?? .manual
         status = try c.decodeIfPresent(PickStatus.self, forKey: .status) ?? .accepted
         diameterNm = try c.decodeIfPresent(Double.self, forKey: .diameterNm)
+        maybe = (try c.decodeIfPresent(Bool.self, forKey: .maybe)) == true ? true : nil
     }
 
     static func newID() -> String {
@@ -67,24 +70,28 @@ struct MicRecord: Codable, Equatable {
 struct ProjectParams: Codable, Equatable {
     var boxNm = 29.0                 // extraction box (nm), as in the web picker
     var diameterNm = 20.0            // default marker / particle diameter (nm)
+    var maybeFlag = false            // opt-in: enables the per-pick "maybe" flag (key ?)
     init() {}
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
         boxNm = try c.decodeIfPresent(Double.self, forKey: .boxNm) ?? 29
         diameterNm = try c.decodeIfPresent(Double.self, forKey: .diameterNm) ?? 20
+        maybeFlag = try c.decodeIfPresent(Bool.self, forKey: .maybeFlag) ?? false
     }
 }
 
 struct PickProject: Codable, Equatable {
     var version = 1
-    var scheme = LabelScheme.default
+    /// Scheme given to a brand-new project (tests override it).
+    static var newProjectScheme = LabelScheme.default
+    var scheme = PickProject.newProjectScheme
     var params = ProjectParams()
     var mics: [String: MicRecord] = [:]
     init() {}
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
         version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
-        scheme = try c.decodeIfPresent(LabelScheme.self, forKey: .scheme) ?? .default
+        scheme = try c.decodeIfPresent(LabelScheme.self, forKey: .scheme) ?? .views   // files written before schemes were stored used the six view labels
         params = try c.decodeIfPresent(ProjectParams.self, forKey: .params) ?? ProjectParams()
         mics = try c.decodeIfPresent([String: MicRecord].self, forKey: .mics) ?? [:]
     }

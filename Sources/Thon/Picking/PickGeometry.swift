@@ -3,11 +3,11 @@ import CoreGraphics
 
 /// Image <-> view transform, mirroring ViewState / InteractiveMTKView.
 /// "Viewer image coordinates" are continuous with pixel i spanning [i, i+1).
-/// "Pick coordinates" are array indices (pixel centre = integer), as used by numpy, mrcfile and RELION,
+/// "Pick coordinates" are array indices (pixel center = integer), as used by numpy, mrcfile and RELION,
 /// so pick = viewer - 0.5.
 struct ViewGeometry {
     var zoom: Double                  // drawable px per image px
-    var center: CGPoint               // viewer image coords at the centre of the view
+    var center: CGPoint               // viewer image coords at the center of the view
     var viewPixels: CGSize            // drawable size in px
     var backingScale: Double          // drawable px per point
 
@@ -27,7 +27,7 @@ struct ViewGeometry {
     var pointsPerPixel: Double { zoom / backingScale }
 }
 
-/// Renders a (2*half)² crop centred on pick coordinates (cx, cy) as 8-bit gray with the viewer's contrast mapping.
+/// Renders a (2*half)² crop centered on pick coordinates (cx, cy) as 8-bit gray with the viewer's contrast mapping.
 /// Pixels outside the image are mid-gray. Row 0 = top.
 func renderCrop(pixels: [Float], width: Int, height: Int, cx: Double, cy: Double, half: Int,
                 lo: Double, hi: Double, gamma: Double = 1, invert: Bool = false) -> [UInt8] {

@@ -113,7 +113,7 @@ final class AppModel: ObservableObject {
         return (px, e.width, e.height)
     }
 
-    /// Opens micrograph `key` (if needed) and centres the view on the pick, zoomed so ~5 boxes fit across the view.
+    /// Opens micrograph `key` (if needed) and centers the view on the pick, zoomed so ~5 boxes fit across the view.
     func goTo(key: String, x: Double, y: Double) {
         showGallery = false
         let box = max(picks.boxPx, 8)
