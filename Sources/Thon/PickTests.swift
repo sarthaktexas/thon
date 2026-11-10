@@ -1034,7 +1034,11 @@ func testSwipe(_ t: inout TestRun) {
     t.check(p1.status == .accepted && p1.label == "ring_top" && p1.x == first.x + 6 && p1.y == first.y - 4 && sw.override == nil, "accept: status, active label and re-centered coordinates")
     let d1 = c.store.record(k).swipe!.decisions.last!
     t.check(d1.decision == "pick" && d1.recentered && !d1.decoy && d1.id == first.id && d1.ms != nil, "decision logged")
-    t.check(String(data: (try? JSONEncoder().encode(d1)) ?? Data(), encoding: .utf8)?.contains("\"recentred\":true") == true, "decision JSON keeps the legacy key recentred")
+    t.check(String(data: (try? JSONEncoder().encode(d1)) ?? Data(), encoding: .utf8)?.contains("\"recentered\":true") == true, "decision JSON writes the key recentered")
+    let legacyJSON = Data(#"{"id":"x","decision":"pick","x":1,"y":2,"decoy":false,"recentred":true}"#.utf8)
+    t.check((try? JSONDecoder().decode(SwipeDecision.self, from: legacyJSON))?.recentered == true, "legacy key recentred still loads (migration)")
+    let bareJSON = Data(#"{"id":"y","decision":"reject","x":3,"y":4}"#.utf8)
+    t.check((try? JSONDecoder().decode(SwipeDecision.self, from: bareJSON)).map { !$0.recentered && !$0.decoy && $0.ms == nil } == true, "decision without optional keys loads")
     // reject, label accept, unsure, later
     let second = sw.current!; sw.reject()
     t.check(c.store.pick(second.id, in: k)?.status == .dismissed, "reject dismisses the candidate")
@@ -1069,7 +1073,7 @@ func testSwipe(_ t: inout TestRun) {
     // export of decisions
     let files = PickExporter.swipeFiles(project: c.store.project)
     let csv = files.first { $0.name == "swipe_decisions.csv" }?.text ?? ""
-    t.check(csv.hasPrefix("card_id,decision,label,x_px,y_px,recentred,decoy,dwell_ms,time\n") && csv.components(separatedBy: "\n").count - 2 == st.cards && files.contains { $0.name == "swipe_stats.json" }, "swipe_decisions.csv + swipe_stats.json")
+    t.check(csv.hasPrefix("card_id,decision,label,x_px,y_px,recentered,decoy,dwell_ms,time\n") && csv.components(separatedBy: "\n").count - 2 == st.cards && files.contains { $0.name == "swipe_stats.json" }, "swipe_decisions.csv + swipe_stats.json")
     let out = testTempDir(); defer { try? FileManager.default.removeItem(at: out) }
     _ = try? PickExporter.export(project: c.store.project, root: dir, outDir: out, options: ExportOptions())
     t.check(FileManager.default.fileExists(atPath: out.appendingPathComponent("swipe_decisions.csv").path), "export writes swipe files when decisions exist")

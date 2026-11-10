@@ -13,10 +13,29 @@ struct SwipeDecision: Codable, Equatable {
     var ms: Int?                      // dwell time
     var t: Double?                    // epoch seconds
 
-    /// The persisted / exported key stays `recentred`, as written by the web picker, so existing logs keep loading.
-    enum CodingKeys: String, CodingKey {
-        case id, decision, label, x, y, decoy, ms, t
-        case recentered = "recentred"
+    enum CodingKeys: String, CodingKey { case id, decision, label, x, y, decoy, recentered, ms, t }
+}
+
+/// Logs and project files written before the spelling change store the flag under the key `recentred`; they still load.
+/// (Encoding is synthesized and always writes `recentered`.)
+extension SwipeDecision {
+    private enum LegacyKeys: String, CodingKey { case recentred }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        decision = try c.decode(String.self, forKey: .decision)
+        label = try c.decodeIfPresent(String.self, forKey: .label)
+        x = try c.decode(Double.self, forKey: .x)
+        y = try c.decode(Double.self, forKey: .y)
+        decoy = try c.decodeIfPresent(Bool.self, forKey: .decoy) ?? false
+        if let r = try c.decodeIfPresent(Bool.self, forKey: .recentered) {
+            recentered = r
+        } else {
+            recentered = try decoder.container(keyedBy: LegacyKeys.self).decodeIfPresent(Bool.self, forKey: .recentred) ?? false
+        }
+        ms = try c.decodeIfPresent(Int.self, forKey: .ms)
+        t = try c.decodeIfPresent(Double.self, forKey: .t)
     }
 }
 
@@ -228,14 +247,14 @@ extension PickExporter {
     static func swipeFiles(project: PickProject) -> [(name: String, text: String)] {
         let logs = project.mics.sorted(by: { $0.key < $1.key }).compactMap { k, r in r.swipe.map { (k, $0) } }
         guard logs.contains(where: { !$0.1.decisions.isEmpty }) else { return [] }
-        var lines = ["card_id,decision,label,x_px,y_px,recentred,decoy,dwell_ms,time"]
+        var lines = ["card_id,decision,label,x_px,y_px,recentered,decoy,dwell_ms,time"]
         for (k, l) in logs { for d in l.decisions {
             lines.append([csvField("\(k)@\(d.id)"), d.decision, d.label ?? "", fmt1(d.x), fmt1(d.y), d.recentered ? "1" : "0", d.decoy ? "1" : "0",
                           d.ms.map(String.init) ?? "", d.t.map { String(Int($0)) } ?? ""].joined(separator: ","))
         } }
         let s = SwipeStats.compute(logs.map { $0.1 })
         func r(_ v: Double?) -> String { v.map { String(format: "%.4f", $0) } ?? "null" }
-        let json = "{\n \"cards\": \(s.cards),\n \"pick\": \(s.pick),\n \"reject\": \(s.reject),\n \"unsure\": \(s.unsure),\n \"decoy_seen\": \(s.decoySeen),\n \"decoy_pick\": \(s.decoyPick),\n \"real_seen\": \(s.realSeen),\n \"real_pick\": \(s.realPick),\n \"recentred\": \(s.recentered),\n \"pick_rate_real\": \(r(s.pickRateReal)),\n \"pick_rate_decoy\": \(r(s.pickRateDecoy))\n}\n"
+        let json = "{\n \"cards\": \(s.cards),\n \"pick\": \(s.pick),\n \"reject\": \(s.reject),\n \"unsure\": \(s.unsure),\n \"decoy_seen\": \(s.decoySeen),\n \"decoy_pick\": \(s.decoyPick),\n \"real_seen\": \(s.realSeen),\n \"real_pick\": \(s.realPick),\n \"recentered\": \(s.recentered),\n \"pick_rate_real\": \(r(s.pickRateReal)),\n \"pick_rate_decoy\": \(r(s.pickRateDecoy))\n}\n"
         return [("swipe_decisions.csv", lines.joined(separator: "\n") + "\n"), ("swipe_stats.json", json)]
     }
 }
