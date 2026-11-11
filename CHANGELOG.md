@@ -1,5 +1,8 @@
 # Changelog
 
+## Tests
+* Removed the optional `--picktest --data` check against a real RELION project (it hard-coded one project's folder layout). `--picktest` is fully synthetic.
+
 ## Swipe mode: brightness, contrast and denoising, always labelled
 * New **Display** panel in swipe mode: brightness, contrast, gamma, invert, window from the whole micrograph (same on every card) or from this card (0.5–99.5 % stretch), and a **Show true pixels** toggle (nearest neighbour, no interpolation).
 * Denoise (display only): Gaussian, median, bilateral, non-local means, with size / strength sliders. Noise σ for the bilateral and NL-means strength is estimated from the card's own raw pixels (shown as σn; assumes uncorrelated noise, so it is a lower bound).
@@ -56,7 +59,7 @@
 * New CLI modes: `--picktest`, `--autopick`, `--export-picks`. `--selftest` also runs the picker logic tests.
 
 ## Manual test checklist (GUI, needs your Mac)
-1. `./build_app.sh` finishes; `.build/release/Thon --selftest` and `--picktest --data /path/to/relion-project` print no FAIL.
+1. `./build_app.sh` finishes; `.build/release/Thon --selftest` and `--picktest` print no FAIL.
 2. Open `<project>/Micrographs`: .mrc files list with thumbnails and Å/px; picture is upright (row 0 on top).
 3. Press P. Click adds a colored circle at the click position; drag moves it; right-click deletes; ⌘Z / ⇧⌘Z work; shift-drag selects.
 4. 1–3 (Quality) relabel the selection; Edit labels… ▸ Presets switches scheme and asks where dropped labels' picks go; Edit labels… changes names/colors/hotkeys; a reserved key is refused.

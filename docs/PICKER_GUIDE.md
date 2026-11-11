@@ -88,5 +88,5 @@ the dark halo built into the core score is a property of the method, not of the 
 `[{"x":..,"y":..,"score":..}]` on stdout; results appear as ghosts. The command runs with your user rights.
 
 ## Tests
-`Thon --picktest [--data <relion-project>]` runs the headless checks. The GUI (overlay, mouse handling, inspector, sheets)
+`Thon --picktest` runs the headless checks. The GUI (overlay, mouse handling, inspector, sheets)
 is not covered by them and has to be checked by hand: see the checklist in CHANGELOG.md.

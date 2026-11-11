@@ -29,9 +29,7 @@ against CPU reference implementations once:
 It prints PASS/FAIL per check (shader compile, Gaussian low-pass, background flatten, nearest/bilinear/pyramid
 rendering, invert) and exits non-zero on failure. It then runs the CPU logic tests of the picker (same as `--picktest`).
 
-    .build/release/Thon --picktest [--data /path/to/relion-project]    # headless: MRC, picks, auto-picker, import/export, gallery, swipe
-
-`--data` additionally checks the importer and the RELION class back-mapping against the star files and micrographs of a real RELION project.
+    .build/release/Thon --picktest    # headless: MRC, picks, auto-picker, import/export, gallery, swipe
 
 ## File format notes
 

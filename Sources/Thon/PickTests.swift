@@ -1,6 +1,6 @@
 import Foundation
 
-/// Headless logic tests (no GPU, no UI). Run with `Thon --picktest [--data <dir-with-mrc>]`.
+/// Headless logic tests (no GPU, no UI). Run with `Thon --picktest`.
 struct TestRun {
     var passed = 0, failed = 0
     mutating func check(_ ok: Bool, _ name: String, _ detail: @autoclosure () -> String = "") {
@@ -46,7 +46,6 @@ func runPickTests(_ args: [String]) -> Int32 {
     testSortAndGrid(&t)
     testCTF(&t)
     testMeasureAndUnits(&t)
-    if let i = args.firstIndex(of: "--data"), i + 1 < args.count { testRealData(&t, root: URL(fileURLWithPath: args[i + 1])) }
     print("picktest: \(t.passed) passed, \(t.failed) failed")
     return t.failed == 0 ? 0 : 1
 }
@@ -1054,27 +1053,6 @@ func testClassMapping(_ t: inout TestRun) {
     c.store.undo("Micrographs_raw/F4a_001.mrc")
     t.check(c.store.pick("q1", in: "Micrographs_raw/F4a_001.mrc") != nil, "class removal is undoable per micrograph")
     c.clearClasses(); t.check(c.classes == nil, "clear")
-}
-
-func testRealData(_ t: inout TestRun, root: URL) {
-    t.section("real data (\(root.lastPathComponent))")
-    let fm = FileManager.default
-    let mics = ((try? fm.contentsOfDirectory(atPath: root.appendingPathComponent("RELION_F4/Micrographs_raw").path)) ?? []).filter { $0.hasSuffix(".mrc") }.map { "Micrographs_raw/" + $0 }
-    let list = root.appendingPathComponent("RELION_F4/coords_core/coords_list.star")
-    let star = root.appendingPathComponent("RELION_F4/Class2D/core/run_it100_data.star")
-    guard !mics.isEmpty, fm.fileExists(atPath: list.path), fm.fileExists(atPath: star.path) else { print("  (skipped: F4 files not found)"); return }
-    let c = PickController(); c.store.saveDelay = 0; c.store.openProject(folder: testTempDir())
-    c.importPicks(files: [list], knownKeys: mics, asCandidates: false)
-    let nPicks = c.store.project.mics.values.reduce(0) { $0 + $1.picks.count }
-    let text = (try? String(contentsOf: star, encoding: .utf8)) ?? ""
-    let rows = ClassMapping.rows(fromStar: text)
-    t.check(nPicks == 3101 && !rows.isEmpty, "imported the 3101 coords_core picks; class rows read", "\(nPicks), rows \(rows.count)")
-    c.loadClasses(star: star, tolerancePx: 3)
-    let m = c.classes!
-    let rowClassCounts = Dictionary(rows.map { ($0.cls, 1) }, uniquingKeysWith: +)
-    t.check(m.matchedRows == rows.count, "every particle of the 2D run matches a pick (3 px)", "\(m.matchedRows) / \(rows.count): \(c.ioMessage ?? "")")
-    t.check(m.counts == rowClassCounts, "per-class counts equal the star file's class counts")
-    t.check(!m.averages.isEmpty && m.classes.allSatisfy { m.averages[$0] != nil }, "class averages loaded from run_it100_classes.mrcs (one per class)", "\(m.averages.count) averages, \(m.classes.count) classes")
 }
 
 // MARK: swipe mode
