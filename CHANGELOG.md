@@ -1,5 +1,22 @@
 # Changelog
 
+## Phone swiper
+* New **Picks ▸ Phone Swiper…** (⌥⌘P): swipe through the candidates of the open micrograph on a phone on the same Wi-Fi. Switch on, scan the QR code, optionally Add to Home Screen. No app to install: Thon serves a web page while the switch is on (listens only then; pairing code in the link; plain HTTP on the local network). Guide: docs/PHONE.md, protocol: docs/PHONE_API.md.
+* The phone is a remote for the swipe deck (`SwipeSession`): decisions use the same code as the Mac (picks, undo, autosave, decoys kept blind, statistics, export). Cards are rendered on the Mac (same display settings as swipe mode) and sent as JPEG; the phone never gets the micrograph.
+* Labels: the phone reads the open project's label scheme (names, colors, hotkeys; exported labels only) and follows edits on the Mac. Up-swipe uses `uncertain`, or `maybe` in the Quality scheme (the Mac's swipe mode now does the same instead of skipping).
+* Offline: decisions queue on the phone and replay in order when Wi-Fi returns; a decision for a micrograph that is no longer open is dropped and listed.
+* New code: `Sources/Thon/Phone/`, web client in `Resources/phone/` (embedded by `scripts/gen_phone_assets.py`), `Tests/phone/client.test.js` (jsdom). `--picktest` has a "phone swiper API" suite. Info.plist gains the local-network usage text.
+* Not verified in the development sandbox (no sockets, GUI or phone): the listener itself, the Phone panel layout and QR code, and swipe feel. First-run checklist in docs/PHONE.md.
+
+## Grid triage, then sort by swiping
+* **Grid triage** (Picks tab ▸ Grid triage, or ⌥⌘T): a page of 3×3 (or 4×4) candidate crops, best score first. Click the real particles, Enter commits the page: marked tiles are accepted, unmarked tiles are dismissed. "Click junk" flips this (unmarked = particle). Right-click or U marks a tile *unsure*: it stays a candidate. Arrows + Space work without the mouse; A marks all, C clears, Z takes back the last page (one undo step per page).
+* Random-spot decoys are mixed into the grid like in swipe mode, never exported, and their "marked as particle" rate is shown as a control.
+* Triage only decides particle or not. Accepted picks get the active label and are drawn **white** in the main view until they are sorted.
+* **Swipe mode now opens in "Sort particles"** (the old accept / reject card deck is still there as "Review candidates", and the phone swipe page still uses it). Sort deck = accepted auto-picks that have not been sorted yet (or "All picks"). Each swipe direction is assigned a label, shown in a colour-coded legend next to the card; the card tints in that label's colour and names it while you drag. Defaults: up = first label, right = second, down = third, left = dismiss (Views preset: up red, right yellow, down cyan). "Change directions" remaps any direction to any label, Dismiss or Later; the map is remembered. 1–9 still apply any label, X dismiss, L later, Z undo.
+* The Display panel (brightness / contrast / denoise, RAW / DENOISED badge) is shared by grid, sort and review; denoising reverts to raw on every new page or card unless pinned.
+* Decisions are logged with `mode` = `grid`, `sort` or `swipe` (new last CSV column; `view` is the display tag). Sort decisions are left out of the pick / reject statistics.
+* `--picktest` has a new "grid triage and sort mode" suite.
+
 ## Tests
 * Removed the optional `--picktest --data` check against a real RELION project (it hard-coded one project's folder layout). `--picktest` is fully synthetic.
 
@@ -70,5 +87,6 @@
 9. Load classification `<project>/Class2D/run_it100_data.star`: picks colored by class, class averages listed; Select / Relabel work.
 10. Gallery (G): crops appear (this micrograph, then all micrographs); relabel and delete work; double-click jumps to the pick.
 11. Swipe (S): arrows and keys decide cards; click re-centers the cross; Z undoes; level-finished screen shows counts.
+13. Grid triage (⌥⌘T): click two tiles, Enter; the other tiles of the page vanish as rejected, the two are white in the main view. Z brings the page back. Swipe (S) opens Sort: arrows give the labels shown in the legend; Change directions remaps them.
 12. Swipe display: badge says RAW on a new card. V turns on denoising (orange DENOISED badge + dashed frame); the next card is RAW again unless "Keep on next cards" is ticked. `,` `.` `-` `=` change brightness / contrast, 0 resets. "Show true pixels" shows square pixels. After deciding a few cards, the exported `swipe_decisions.csv` has a `display` column.
 12. Export…: check `picks_export/` (star files, all_picks.csv, coords_list_*.star) and that a second export replaces, not duplicates.

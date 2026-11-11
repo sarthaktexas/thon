@@ -4,14 +4,16 @@ A native macOS viewer for electron micrographs: Gatan `.dm3` / `.dm4` and `.mrc`
 
 * View and measure micrographs: pan, zoom, contrast, low-pass and background flattening, scale bar, measure tool.
 * Check defocus on the FFT tab: power spectrum with resolution rings and a fitted CTF. Diagnostic only, nothing is corrected.
-* Pick particles by hand or with the auto-picker, label them, and import or export RELION `.star` files ([picker guide](docs/PICKER_GUIDE.md)).
+* Pick particles by hand or with the built-in auto-picker. Topaz and CryoSegNet are optional extras that run in a Python environment you provide.
+* Sort candidates quickly: grid triage (click the real particles on a page of crops) and swipe mode, with optional "likely first" ordering that learns from your own decisions. You can also swipe from a phone on the same Wi-Fi ([phone guide](docs/PHONE.md)).
+* Label picks and import or export RELION `.star` files ([picker guide](docs/PICKER_GUIDE.md)).
 * Group folders into `.thon` projects with one session per grid.
 
 ![Fitted CTF zeros overlaid on FFT power spectra of three micrographs](docs/ctf_zeros.png)
 
 ## Build and run
 
-Requires macOS 14+ and Xcode 15+ (command-line tools are enough). No third-party dependencies.
+Requires macOS 14+ and Xcode 15+ (command-line tools are enough). No third-party Swift dependencies; Python is needed only for the optional Topaz and CryoSegNet engines.
 
     ./build_app.sh                 # builds Thon.app next to this file
     open Thon.app                  # or: open Thon.app --args /path/to/folder-or-file
