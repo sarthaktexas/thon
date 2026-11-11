@@ -87,6 +87,11 @@ struct SwipeView: View {
                         .frame(width: side, height: side).allowsHitTesting(false)
                 }
                 SwipeBadge(sw: sw, pc: pc).frame(width: side, height: side, alignment: .topLeading)
+                SwipeEdgeHints(hints: [.right: .init(text: "Particle", colorHex: store.scheme.label(pc.activeLabel)?.color ?? "#4dff6a"),
+                                       .left: .init(text: "Reject", colorHex: "#ff4d4d"),
+                                       .up: .init(text: sw.unsureLabel == nil ? "Later" : "Unsure", colorHex: "#d9a600"),
+                                       .down: .init(text: "Later", colorHex: "#6a6a6a")],
+                               active: SortSession.direction(of: sw.dragOffset), side: side)
             }
             Rectangle().fill(tint.opacity(0.35 * strength)).frame(width: side, height: side).allowsHitTesting(false)
         }

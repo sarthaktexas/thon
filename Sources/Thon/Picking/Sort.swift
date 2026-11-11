@@ -35,10 +35,14 @@ struct SortMap: Equatable {
         set { switch d { case .up: up = newValue; case .right: right = newValue; case .down: down = newValue; case .left: left = newValue } }
     }
 
-    /// Up = first label, right = second, down = third, left = dismiss. With the Views preset: up red, right yellow, down cyan.
+    /// Quality scheme (good / maybe / reject): left = Reject, up = Maybe, right = Good, down = Dismiss.
+    /// Any other scheme (the Views preset): left = first label ("view 1"), up = second ("view 2"), right = third ("view 3"), down = Dismiss.
     static func defaults(for scheme: LabelScheme) -> SortMap {
-        func lab(_ i: Int) -> SortAction { i < scheme.labels.count ? .label(scheme.labels[i].id) : .later }
-        return SortMap(up: lab(0), right: lab(1), down: lab(2), left: .dismiss)
+        if scheme.label("good") != nil, scheme.label("maybe") != nil, scheme.label("reject") != nil {
+            return SortMap(up: .label("maybe"), right: .label("good"), down: .dismiss, left: .label("reject"))
+        }
+        func nth(_ i: Int) -> SortAction { i < scheme.labels.count ? .label(scheme.labels[i].id) : .later }
+        return SortMap(up: nth(1), right: nth(2), down: .dismiss, left: nth(0))
     }
 
     /// Replaces assignments that point at a label the scheme no longer has by the default for that direction.
@@ -51,17 +55,19 @@ struct SortMap: Equatable {
         return m
     }
 
-    static let defaultsKey = "sort.map"
-    func save(_ ud: UserDefaults = .standard) {
-        ud.set(Dictionary(uniqueKeysWithValues: SwipeDir.allCases.map { ($0.rawValue, self[$0].code) }), forKey: Self.defaultsKey)
+    /// A customised map is remembered per label scheme (keyed by its label ids), so Quality and Views keep their own.
+    static func storageKey(for scheme: LabelScheme) -> String { "sort.map." + scheme.labels.map { $0.id }.joined(separator: ",") }
+    func save(scheme: LabelScheme, _ ud: UserDefaults = .standard) {
+        ud.set(Dictionary(uniqueKeysWithValues: SwipeDir.allCases.map { ($0.rawValue, self[$0].code) }), forKey: Self.storageKey(for: scheme))
     }
     static func load(scheme: LabelScheme, _ ud: UserDefaults = .standard) -> SortMap {
         var m = SortMap.defaults(for: scheme)
-        if let d = ud.dictionary(forKey: defaultsKey) as? [String: String] {
+        if let d = ud.dictionary(forKey: storageKey(for: scheme)) as? [String: String] {
             for dir in SwipeDir.allCases { if let c = d[dir.rawValue], let a = SortAction(code: c) { m[dir] = a } }
         }
         return m.valid(for: scheme)
     }
+    static func forget(scheme: LabelScheme, _ ud: UserDefaults = .standard) { ud.removeObject(forKey: storageKey(for: scheme)) }
 }
 
 enum SortScope: String, CaseIterable, Identifiable {
@@ -86,8 +92,10 @@ final class SortSession: ObservableObject {
     @Published private(set) var total = 0
     @Published private(set) var reviewed = 0
     @Published var scope = SortScope.unsorted
-    @Published var map: SortMap { didSet { if map != oldValue { map.save(defaults) } } }
+    @Published var map: SortMap { didSet { if !loadingMap && map != oldValue { map.save(scheme: pc.store.scheme, defaults) } } }
     private let defaults: UserDefaults
+    private var loadingMap = false
+    private var mapKey = ""
     @Published var override: CGPoint?
     @Published var dragOffset = CGSize.zero
     @Published private(set) var revision = 0
@@ -96,6 +104,13 @@ final class SortSession: ObservableObject {
 
     init(pc: PickController, defaults: UserDefaults = .standard) {
         self.pc = pc; self.defaults = defaults; map = SortMap.load(scheme: pc.store.scheme, defaults)
+        mapKey = SortMap.storageKey(for: pc.store.scheme)
+    }
+
+    /// Back to the built-in directions for the current scheme (forgets the saved customisation).
+    func resetMap() {
+        SortMap.forget(scheme: pc.store.scheme, defaults)
+        loadingMap = true; map = SortMap.defaults(for: pc.store.scheme); loadingMap = false
     }
 
     var current: Card? { queue.first }
@@ -120,7 +135,11 @@ final class SortSession: ObservableObject {
     func pendingCount(_ key: String) -> Int { deckPicks(key: key, scope: .unsorted).count }
 
     func rebuild() {
-        map = map.valid(for: pc.store.scheme)
+        let sk = SortMap.storageKey(for: pc.store.scheme)
+        loadingMap = true
+        if sk != mapKey { mapKey = sk; map = SortMap.load(scheme: pc.store.scheme, defaults) }     // scheme changed: that scheme's own map
+        else { map = map.valid(for: pc.store.scheme) }
+        loadingMap = false
         guard let key = pc.currentKey, pc.imageSize.width > 0 else { queue = []; total = 0; return }
         queue = deckPicks(key: key, scope: scope).map { Card(id: $0.id, x: $0.x, y: $0.y, score: $0.score, label: $0.label) }
         total = queue.count; reviewed = 0; history = []; override = nil

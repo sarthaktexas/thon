@@ -101,3 +101,35 @@ struct DisplayPanel: View {
         }
     }
 }
+
+/// What each swipe direction does, drawn on the four edges of the card (the active one lights up while dragging).
+struct SwipeEdgeHints: View {
+    struct Hint { var text: String; var colorHex: String }
+    var hints: [SwipeDir: Hint]
+    var active: SwipeDir?
+    var side: CGFloat
+
+    var body: some View {
+        ZStack {
+            chip(.up).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            chip(.down).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            chip(.left).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            chip(.right).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+        }
+        .frame(width: side, height: side).padding(0).allowsHitTesting(false)
+    }
+
+    @ViewBuilder private func chip(_ d: SwipeDir) -> some View {
+        if let h = hints[d] {
+            let on = active == d
+            Text(d == .right ? "\(h.text) \(d.arrow)" : "\(d.arrow) \(h.text)")
+                .font(.system(size: 12, weight: .bold)).lineLimit(1)
+                .foregroundStyle(.white).shadow(color: .black.opacity(0.6), radius: 1)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(swiftUIColor(h.colorHex).opacity(on ? 1 : 0.72), in: Capsule())
+                .overlay(Capsule().strokeBorder(.black.opacity(0.35), lineWidth: 1))
+                .scaleEffect(on ? 1.12 : 1)
+                .padding(8)
+        }
+    }
+}

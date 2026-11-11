@@ -8,19 +8,22 @@ func testSortAndGrid(_ t: inout TestRun) {
     // --- direction map (pure logic)
     let views = LabelScheme.views, quality = LabelScheme.quality
     let mv = SortMap.defaults(for: views), mq = SortMap.defaults(for: quality)
-    t.check(mv.up == .label("ring_top") && mv.right == .label("side") && mv.down == .label("tilted") && mv.left == .dismiss, "default map, Views scheme: up red ring, right yellow side, down cyan tilted, left dismiss")
-    t.check(mq.up == .label("good") && mq.right == .label("maybe") && mq.down == .label("reject") && mq.left == .dismiss, "default map, Quality scheme")
+    t.check(mv.left == .label("ring_top") && mv.up == .label("side") && mv.right == .label("tilted") && mv.down == .dismiss, "default map, Views scheme: left view 1, up view 2, right view 3, down dismiss")
+    t.check(mq.left == .label("reject") && mq.up == .label("maybe") && mq.right == .label("good") && mq.down == .dismiss, "default map, Quality scheme: left reject, up maybe, right good, down dismiss")
+    t.check(SortMap.storageKey(for: views) != SortMap.storageKey(for: quality), "each scheme has its own saved map")
     var broken = mv; broken.up = .label("gone"); broken.right = .later
     let fixed = broken.valid(for: views)
-    t.check(fixed.up == .label("ring_top") && fixed.right == .later, "map entries pointing at a removed label fall back to the default; others stay")
+    t.check(fixed.up == mv.up && fixed.right == .later, "map entries pointing at a removed label fall back to the default; others stay")
     t.check(SortAction(code: SortAction.label("side").code) == .label("side") && SortAction(code: "dismiss") == .dismiss && SortAction(code: "later") == .later && SortAction(code: "x") == nil, "action code round trip")
     let suite = "thon.test.\(UUID().uuidString)"
     let ud = UserDefaults(suiteName: suite)!
     defer { ud.removePersistentDomain(forName: suite) }
-    var custom = mv; custom.up = .label("tilted"); custom.down = .later; custom.save(ud)
+    var custom = mv; custom.up = .label("tilted"); custom.down = .later; custom.save(scheme: views, ud)
     let back = SortMap.load(scheme: views, ud)
     t.check(back == custom, "map survives save / load")
-    t.check(SortMap.load(scheme: quality, ud).up == mq.up && SortMap.load(scheme: quality, ud).down == .later, "stale label ids in a saved map are replaced when the scheme differs")
+    t.check(SortMap.load(scheme: quality, ud) == mq, "a map saved for the Views scheme does not touch the Quality scheme")
+    SortMap.forget(scheme: views, ud)
+    t.check(SortMap.load(scheme: views, ud) == mv, "forgetting a saved map restores the built-in directions")
     t.check(SortSession.direction(of: CGSize(width: 90, height: 10)) == .right && SortSession.direction(of: CGSize(width: -90, height: 10)) == .left
             && SortSession.direction(of: CGSize(width: 10, height: -90)) == .up && SortSession.direction(of: CGSize(width: 10, height: 90)) == .down
             && SortSession.direction(of: CGSize(width: 5, height: 5)) == nil, "drag direction from the dominant axis, nil for tiny drags")
@@ -119,24 +122,24 @@ func testSortAndGrid(_ t: inout TestRun) {
 
     let first = so.current!
     let acceptedBefore = c.store.accepted(k).count
-    so.swipe(.up)                                                  // ring_top = the label the pick already has
-    t.check(so.reviewed == 1 && so.current?.id != first.id && isSorted(first.id, in: c.store.record(k).swipe), "up: logged as sorted, next card")
+    so.swipe(.left)                                                // ring_top = the label the pick already has
+    t.check(so.reviewed == 1 && so.current?.id != first.id && isSorted(first.id, in: c.store.record(k).swipe), "left (view 1): logged as sorted, next card")
     so.undo()
     t.check(c.store.accepted(k).count == acceptedBefore && !isSorted(first.id, in: c.store.record(k).swipe) && so.current?.id == first.id,
             "undo of a swipe that changed nothing does not undo an unrelated edit")
 
-    so.swipe(.right)                                               // side
+    so.swipe(.right)                                               // tilted
     let p1 = c.store.pick(first.id, in: k)!
     let d1 = c.store.record(k).swipe!.decisions.last!
-    t.check(p1.label == "side" && p1.status == .accepted && d1.mode == "sort" && d1.decision == "pick" && d1.label == "side" && !d1.decoy, "right: pick relabelled, logged with mode sort")
+    t.check(p1.label == "tilted" && p1.status == .accepted && d1.mode == "sort" && d1.decision == "pick" && d1.label == "tilted" && !d1.decoy, "right (view 3): pick relabelled, logged with mode sort")
     so.undo()
     t.check(c.store.pick(first.id, in: k)?.label == c.activeLabel && !isSorted(first.id, in: c.store.record(k).swipe), "undo restores the previous label and the log")
 
-    so.swipe(.down)                                                // tilted
-    t.check(c.store.pick(first.id, in: k)?.label == "tilted", "down: tilted")
+    so.swipe(.up)                                                  // side
+    t.check(c.store.pick(first.id, in: k)?.label == "side", "up (view 2): side")
     let second = so.current!
-    so.swipe(.left)                                                // dismiss
-    t.check(c.store.pick(second.id, in: k)?.status == .dismissed && c.store.record(k).swipe!.decisions.last!.decision == "reject", "left: dismissed and logged as reject")
+    so.swipe(.down)                                                // dismiss
+    t.check(c.store.pick(second.id, in: k)?.status == .dismissed && c.store.record(k).swipe!.decisions.last!.decision == "reject", "down: dismissed and logged as reject")
     so.undo()
     t.check(c.store.pick(second.id, in: k)?.status == .accepted && so.current?.id == second.id, "undo of a dismissal brings the pick back")
 
@@ -146,11 +149,11 @@ func testSortAndGrid(_ t: inout TestRun) {
     so.undo()
     t.check(so.current?.id == second.id, "undo later")
 
-    // custom map: up = side
-    so.map.up = .label("side")
+    // custom map: up = tilted
+    so.map.up = .label("tilted")
     so.swipe(.up)
-    t.check(c.store.pick(second.id, in: k)?.label == "side", "re-mapped direction applies the new label")
-    t.check(SortMap.load(scheme: c.store.scheme, ud).up == .label("side"), "map change is saved")
+    t.check(c.store.pick(second.id, in: k)?.label == "tilted", "re-mapped direction applies the new label")
+    t.check(SortMap.load(scheme: c.store.scheme, ud).up == .label("tilted"), "map change is saved for this scheme")
     so.label("oligomer")                                           // hotkey path for a label without a direction
     let third = c.store.record(k).swipe!.decisions.last!
     t.check(third.label == "oligomer" && third.view == "raw" && third.mode == "sort", "label by key: logged with display tag and mode sort")
@@ -158,7 +161,7 @@ func testSortAndGrid(_ t: inout TestRun) {
     // recentering moves the pick
     let cur = so.current!
     so.recenter(to: CGPoint(x: cur.x + 6, y: cur.y - 4))
-    so.swipe(.down)
+    so.swipe(.right)
     let moved = c.store.pick(cur.id, in: k)!
     t.check(abs(moved.x - (cur.x + 6)) < 1e-9 && abs(moved.y - (cur.y - 4)) < 1e-9 && c.store.record(k).swipe!.decisions.last!.recentered, "re-centered cross moves the pick")
 

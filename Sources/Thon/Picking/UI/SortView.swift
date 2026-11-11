@@ -80,6 +80,8 @@ struct SortView: View {
                         .frame(width: side, height: side).allowsHitTesting(false)
                 }
                 SwipeBadge(sw: sw, pc: pc).frame(width: side, height: side, alignment: .topLeading)
+                SwipeEdgeHints(hints: Dictionary(uniqueKeysWithValues: SwipeDir.allCases.map { ($0, SwipeEdgeHints.Hint(text: so.actionName(so.map[$0]), colorHex: so.actionColor(so.map[$0]))) }),
+                               active: dir, side: side)
             }
             Rectangle().fill(tint.opacity(0.35 * strength)).frame(width: side, height: side).allowsHitTesting(false)
             if let a = action, strength > 0.25 {        // name of what releasing the card will do
@@ -180,7 +182,7 @@ struct SortView: View {
                             }.labelsHidden().controlSize(.small)
                         }
                     }
-                    Button("Reset to defaults") { so.map = SortMap.defaults(for: store.scheme) }.controlSize(.small)
+                    Button("Reset to defaults") { so.resetMap() }.controlSize(.small)
                 }.padding(.top, 2)
             }.font(.caption).frame(width: 214)
             Spacer(minLength: 0)
