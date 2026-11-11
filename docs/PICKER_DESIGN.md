@@ -37,7 +37,7 @@ Project    { version, scheme, params{box_nm, diameter_nm}, mics{ key -> MicRecor
 * `status = candidate` is a ghost (auto, not yet accepted); `dismissed` candidates are kept so re-running the
   auto-picker does not resurrect them (suppressed within 0.5 diameter). Only `accepted` picks are exported.
 * Undo/redo: snapshot-free command stack (add/remove/move/relabel/resize/status/bulk), per micrograph.
-* Autosave: debounced 1.5 s to `picks_project.json` (atomic write), rolling backups to `backups/` at most every 5 min,
+* Autosave: debounced 1.5 s to `picks_project.json` (atomic write), rolling backups to the hidden `.backups/` at most every 5 min,
   keep newest 30.
 
 ## LabelScheme

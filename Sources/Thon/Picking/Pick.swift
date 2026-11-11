@@ -91,6 +91,9 @@ struct PickProject: Codable, Equatable {
     var name: String?                          // project title (.thon projects)
     var sessions: [PickSession] = []           // imaging sessions; empty for a plain folder project
     var mics: [String: MicRecord] = [:]
+    /// Swipe-assistant training samples (compact JSON, written by `Reranker`). Kept as one opaque blob so the project file
+    /// stays small and readable; nil until the assistant has seen a decision.
+    var assist: Data?
     init() {}
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
@@ -100,5 +103,6 @@ struct PickProject: Codable, Equatable {
         name = try c.decodeIfPresent(String.self, forKey: .name)
         sessions = try c.decodeIfPresent([PickSession].self, forKey: .sessions) ?? []
         mics = try c.decodeIfPresent([String: MicRecord].self, forKey: .mics) ?? [:]
+        assist = try c.decodeIfPresent(Data.self, forKey: .assist)
     }
 }

@@ -33,8 +33,7 @@ struct PicksTab: View {
             HStack {
                 Toggle("Pick mode (P)", isOn: $pc.enabled)
                 Spacer()
-                Button { model.showGrid = true } label: { Label("Grid triage", systemImage: "square.grid.3x3") }.controlSize(.small)
-                Button { model.showSwipe = true } label: { Label("Swipe mode (S)", systemImage: "rectangle.stack") }.controlSize(.small)
+                Button { model.showCrops = true } label: { Label("Crop editor", systemImage: "viewfinder.circle") }.controlSize(.small)
             }
             HStack {
                 Toggle("Markers (V)", isOn: $pc.showMarkers)

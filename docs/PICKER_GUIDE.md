@@ -1,7 +1,7 @@
 # Particle picker guide
 
 Open a folder of micrographs (`.mrc`, `.mrcs`, `.dm3`, `.dm4`). The folder becomes the **project**: picks are stored in
-`picks_project.json` there (autosave 1.5 s after each edit, atomic write, rolling backups in `backups/`, newest 30 kept).
+`picks_project.json` there (autosave 1.5 s after each edit, atomic write, rolling backups in the hidden folder `.backups/`, newest 30 kept).
 Press **P** (or the Pick toolbar button) to enter pick mode; the **Picks** tab of the inspector holds all controls.
 
 ## Coordinates
@@ -17,8 +17,8 @@ and the web picker. Sizes are kept in nm and converted with the pixel size of ea
 3. **Clean up**: click a ghost to accept it, right-click or ⌫ to remove, drag to move, shift-drag to box-select, `1`–`6` to label,
    `,` / `.` to resize (selection or default), *Remove overlaps*, *Remove edge picks*, score cutoff + *Dismiss hidden*, `A` accept all shown.
 4. **Review** with the **Gallery** (G): crops grouped by label (this micrograph or all), relabel / delete / accept, double-click to jump to the pick.
-   **Swipe mode** (S): one card per candidate, → particle, ← reject, ↑ unsure, ↓ later, 1–9 label, click to re-center, Space zoom out, Z undo.
-   About 8 % of cards are blind random spots (control); they are logged, never exported.
+   **Crop editor** (⌥⌘T): one crop at a time; click to add a circle, drag to move, pinch or ↑ ↓ to resize, double-click to remove, Space green / yellow (sure / maybe), Return next crop, Z undo.
+   Swipe mode is on the phone (see PHONE.md); about 8 % of its cards are blind random spots (control), logged and never exported.
 5. **Classes**: *Load classification…* with a RELION `run_itNNN_data.star` colors every pick by its class (average shown if
    `run_itNNN_classes.mrcs` is next to it). Select, relabel or remove a whole class on all micrographs.
 6. **Export**: RELION, CSV, EMAN. Mark micrographs *Done* and export only those if needed.
@@ -39,7 +39,7 @@ and the web picker. Sizes are kept in nm and converted with the pixel size of ea
 | V / B | show markers / boxes |
 | Esc | deselect, then leave pick mode |
 | ⌘Z / ⇧⌘Z | undo / redo (per micrograph) |
-| P, G, S | pick mode, gallery, swipe mode |
+| P, G | pick mode, gallery |
 
 Reserved (cannot be label hotkeys): A B F G I P S V , . = + -.
 
@@ -59,7 +59,7 @@ selected picks, independent of their label (a "?" is drawn on the marker). Expor
 | File | Content |
 |---|---|
 | `picks_project.json` | scheme, sizes, per-micrograph picks (x, y, label, score, source, status), auto-pick parameters, swipe decisions |
-| `backups/picks_project_*.json` | rolling backups (at most one per 5 min) |
+| `.backups/picks_project_*.json` (hidden) | rolling backups (at most one per 5 min) |
 | `labels.json` | optional label scheme |
 | `picks_export/` (default) | `all_picks.csv`, `<dataset>/<label>/<micrograph>.star`, `<dataset>/coords_list_<label>.star`, `box/…` (EMAN), `swipe_decisions.csv`, `swipe_stats.json` |
 

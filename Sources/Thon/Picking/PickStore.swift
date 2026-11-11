@@ -531,17 +531,48 @@ final class PickStore: ObservableObject {
     }
     func flush() { if dirty { save() } }
 
-    /// Folder projects: <folder>/backups; .thon projects: <folder>/<name>_backups (several projects can share a folder).
+    /// Hidden (dot-prefixed) so the project folder stays tidy. Folder projects: <folder>/.backups;
+    /// .thon projects: <folder>/.<name>_backups (several projects can share a folder).
     func backupDirectory(root: URL) -> URL {
+        isProjectFile ? root.appendingPathComponent("." + (projectURL!.deletingPathExtension().lastPathComponent) + "_backups") : root.appendingPathComponent(".backups")
+    }
+
+    /// The visible directory older versions used (`backups`, `<name>_backups`).
+    private func legacyBackupDirectory(root: URL) -> URL {
         isProjectFile ? root.appendingPathComponent((projectURL!.deletingPathExtension().lastPathComponent) + "_backups") : root.appendingPathComponent("backups")
+    }
+
+    /// Moves this project's backup files out of the old visible directory into the hidden one (only files that carry this
+    /// project's prefix and extension; other files are left alone, and the old directory is removed only if it ends up empty).
+    private func adoptLegacyBackups(into dir: URL, root: URL, prefix: String, ext: String) {
+        let fm = FileManager.default
+        let old = legacyBackupDirectory(root: root)
+        guard fm.fileExists(atPath: old.path) else { return }
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        for f in ((try? fm.contentsOfDirectory(atPath: old.path)) ?? []) where f.hasPrefix(prefix) && f.hasSuffix("." + ext) {
+            let dst = dir.appendingPathComponent(f)
+            if !fm.fileExists(atPath: dst.path) { try? fm.moveItem(at: old.appendingPathComponent(f), to: dst) }
+        }
+        if ((try? fm.contentsOfDirectory(atPath: old.path)) ?? ["x"]).filter({ $0 != ".DS_Store" }).isEmpty {
+            try? fm.removeItem(at: old)     // empty directory we created ourselves
+        }
+    }
+
+    /// Swipe-assistant samples live inside the project; setting them schedules an autosave (no UI revision change).
+    func setAssist(_ d: Data?) {
+        guard d != project.assist else { return }
+        project.assist = d
+        dirty = true
+        scheduleSave()
     }
 
     private func writeBackup(_ data: Data) {
         guard let root else { return }
         let dir = backupDirectory(root: root)
+        let (prefix, ext) = isProjectFile ? (projectURL!.deletingPathExtension().lastPathComponent + "_", Self.projectExtension) : ("picks_project_", "json")
+        adoptLegacyBackups(into: dir, root: root, prefix: prefix, ext: ext)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let f = DateFormatter(); f.dateFormat = "yyyyMMdd_HHmmss_SSS"; f.locale = Locale(identifier: "en_US_POSIX")
-        let (prefix, ext) = isProjectFile ? (projectURL!.deletingPathExtension().lastPathComponent + "_", Self.projectExtension) : ("picks_project_", "json")
         let name = "\(prefix)\(f.string(from: Date())).\(ext)"       // a .thon backup is itself an openable project file
         try? writeFileAtomically(data, to: dir.appendingPathComponent(name))
         lastBackup = Date()

@@ -1,9 +1,9 @@
 import Foundation
 import CoreGraphics
 
-/// Headless checks for grid triage and sort mode (`Thon --picktest`).
-func testSortAndGrid(_ t: inout TestRun) {
-    t.section("grid triage and sort mode")
+/// Headless checks for sort mode (`Thon --picktest`).
+func testSort(_ t: inout TestRun) {
+    t.section("sort mode")
 
     // --- direction map (pure logic)
     let views = LabelScheme.views, quality = LabelScheme.quality
@@ -47,66 +47,8 @@ func testSortAndGrid(_ t: inout TestRun) {
     c.autoParams.zThreshold = 4; c.runAutoPick(synchronous: true)
     let k = "m.mrc"
     let nCand = c.store.candidates(k).count
-    let gr = c.grid
-    gr.rebuild()
-    let nDecoy = gr.deck.filter { $0.decoy }.count
-    t.check(nCand >= 12 && nDecoy > 0 && gr.deck.count == nCand + nDecoy, "grid deck = candidates + decoys", "cand \(nCand) decoys \(nDecoy) deck \(gr.deck.count)")
-    t.check(gr.tiles == 9 && gr.page.count == 9 && gr.pageCount == (gr.deck.count + 8) / 9 && !gr.page[0].decoy, "3×3 page, first tile is a real candidate")
-
-    // --- commit a page: three particles marked, the rest rejected
-    let page1 = gr.page
-    let realIDs = page1.filter { !$0.decoy }.map { $0.id }
-    let marked = Array(realIDs.prefix(3))
-    for m in marked { gr.toggle(m) }
-    t.check(gr.particleCount == 3, "three tiles marked as particles")
-    let serial0 = c.store.topSerial(k)
-    gr.commit()
-    let accepted = Set(c.store.accepted(k).map { $0.id })
-    let dismissed = Set(c.store.picks(k).filter { $0.status == .dismissed }.map { $0.id })
-    t.check(accepted == Set(marked) && c.store.accepted(k).allSatisfy { $0.label == c.activeLabel }, "marked tiles are accepted with the active label")
-    t.check(dismissed == Set(realIDs).subtracting(marked), "unmarked real tiles of the page are dismissed")
-    t.check(c.store.candidates(k).count == nCand - realIDs.count && c.store.picks(k).count == nCand, "tiles of other pages stay candidates; decoys never become picks")
-    var dl = c.store.record(k).swipe?.decisions ?? []
-    t.check(dl.count == 9 && dl.allSatisfy { $0.mode == "grid" } && dl.filter { $0.decoy }.count == page1.filter { $0.decoy }.count, "one grid decision per tile, decoys flagged")
-    t.check(dl.filter { $0.decision == "pick" && !$0.decoy }.count == 3 && dl.allSatisfy { $0.view == "raw" }, "log has 3 picks and the display tag")
-    t.check(gr.start == 9 && gr.particleCount == 0, "next page starts clean")
-    t.check(c.store.topSerial(k) != serial0 && c.store.undoName(k)?.hasPrefix("Grid: page") == true, "a page is one undoable store edit")
-
-    // --- undo a page
-    gr.undo()
-    dl = c.store.record(k).swipe?.decisions ?? []
-    t.check(c.store.candidates(k).count == nCand && c.store.accepted(k).isEmpty && dl.isEmpty && gr.start == 0 && c.store.topSerial(k) == serial0, "undo page restores picks, log and position")
-    t.check(gr.particleCount == 3 && marked.allSatisfy { gr.clicked.contains($0) }, "undo page restores the marks")
-    gr.clearPage()
-
-    // --- unsure stays a candidate
-    gr.toggleUnsure(realIDs[0]); gr.toggle(realIDs[1])
-    gr.commit()
-    t.check(c.store.pick(realIDs[0], in: k)?.status == .candidate && c.store.pick(realIDs[1], in: k)?.status == .accepted, "unsure tile stays a candidate, clicked tile accepted")
-    t.check(c.store.record(k).swipe?.decisions.first { $0.id == realIDs[0] }?.decision == "unsure", "unsure is logged")
-    gr.undo(); gr.clearPage()
-
-    // --- junk mode: unmarked = particle
-    gr.junkMode = true
-    gr.toggle(realIDs[0])
-    let pj = gr.particleCount
-    gr.commit()
-    t.check(c.store.pick(realIDs[0], in: k)?.status == .dismissed && realIDs.dropFirst().allSatisfy { c.store.pick($0, in: k)?.status == .accepted }, "junk mode: marked tile rejected, unmarked tiles accepted")
-    let nd = page1.filter { $0.decoy }.count
-    t.check(pj == page1.count - 1 && gr.decoySeen == nd && (nd > 0 ? gr.decoyRate == 1 : gr.decoyRate == nil), "junk mode counts unmarked decoys as particles (control rate)", "\(pj) \(String(describing: gr.decoyRate))")
-    let swSt = SwipeStats.compute(c.store.project.mics.values.compactMap { $0.swipe })
-    t.check(swSt.decoySeen == gr.decoySeen && swSt.cards == 9, "grid decisions feed the pick / decoy statistics")
-    gr.junkMode = false
-
-    // --- 4×4
-    gr.rebuild()
-    gr.n = 4
-    t.check(gr.tiles == 16 && gr.page.count == min(16, gr.deck.count) && gr.start == 0, "4×4 page")
-    gr.moveCursor(dx: 1, dy: 0); gr.moveCursor(dx: 0, dy: 1)
-    t.check(gr.cursor == (gr.page.count > 4 ? min(5, gr.page.count - 1) : 1), "cursor moves right and down on the 4-wide grid, clamped to the tiles present", "\(gr.cursor) of \(gr.page.count)")
-    gr.n = 3
-    gr.rebuild()
-    while !gr.done { gr.markAll(); gr.commit() }                  // accept everything that is left, page by page
+    t.check(nCand >= 12, "fixture has candidates", "\(nCand)")
+    c.store.setStatus(Set(c.store.candidates(k).map { $0.id }), .accepted, in: k)        // every candidate accepted, as after a pass of the crop editor
 
     // --- sort mode
     let so = SortSession(pc: c, defaults: ud)
@@ -170,7 +112,7 @@ func testSortAndGrid(_ t: inout TestRun) {
     t.check(so.total == autoAccepted.count - 4, "sorted picks are not offered again (4 sorted)", "\(so.total) of \(autoAccepted.count)")
     let files = PickExporter.swipeFiles(project: c.store.project)
     let csv = files.first { $0.name == "swipe_decisions.csv" }?.text ?? ""
-    t.check(csv.hasPrefix("card_id,decision,label,x_px,y_px,recentered,decoy,dwell_ms,time,display,mode\n") && csv.contains(",sort\n") && csv.contains(",grid\n"), "csv has a mode column (grid / sort)")
+    t.check(csv.hasPrefix("card_id,decision,label,x_px,y_px,recentered,decoy,dwell_ms,time,display,mode\n") && csv.contains(",sort\n"), "csv has a mode column")
     t.check(files.first { $0.name == "swipe_stats.json" }?.text.contains("\"cards\"") == true, "stats json still written")
 
     // persistence of mode

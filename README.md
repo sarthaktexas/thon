@@ -5,7 +5,7 @@ A native macOS viewer for electron micrographs: Gatan `.dm3` / `.dm4` and `.mrc`
 * View and measure micrographs: pan, zoom, contrast, low-pass and background flattening, scale bar, measure tool.
 * Check defocus on the FFT tab: power spectrum with resolution rings and a fitted CTF. Diagnostic only, nothing is corrected.
 * Pick particles by hand or with the built-in auto-picker. Topaz and CryoSegNet are optional extras that run in a Python environment you provide.
-* Sort candidates quickly: grid triage (click the real particles on a page of crops) and swipe mode, with optional "likely first" ordering that learns from your own decisions. You can also swipe from a phone on the same Wi-Fi ([phone guide](docs/PHONE.md)).
+* Review candidates in the crop editor: one crop at a time, move, resize, add or remove circles and mark each green (sure) or yellow (maybe). It learns from your edits and shows the crops it is least sure about first. You can also swipe through candidates from a phone on the same Wi-Fi ([phone guide](docs/PHONE.md)).
 * Label picks and import or export RELION `.star` files ([picker guide](docs/PICKER_GUIDE.md)).
 * Group folders into `.thon` projects with one session per grid.
 

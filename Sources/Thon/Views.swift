@@ -25,7 +25,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $model.showGallery) { GalleryView(model: model) }
         .sheet(isPresented: $model.showSwipe) { SwipeView(model: model) }
-        .sheet(isPresented: $model.showGrid) { GridView(model: model) }
+        .sheet(isPresented: $model.showCrops) { CropView(model: model) }
         .sheet(isPresented: $model.showSessions) { SessionsView(model: model, store: model.picks.store) }
         .alert("Thon", isPresented: Binding(get: { model.loadError != nil }, set: { if !$0 { model.loadError = nil } })) {
             Button("OK", role: .cancel) {}

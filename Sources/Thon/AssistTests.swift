@@ -105,6 +105,7 @@ func testAssist(_ t: inout TestRun) {
     for (i, c) in train.cands.enumerated() { rr.observe(key: "m1", id: "c\(i)", decision: c.yes ? "pick" : "reject", decoy: false, hand: train.hand(c), embedding: nil) }
     t.check(rr.status.positives == train.cands.filter { $0.yes }.count, "counts follow the decisions", "\(rr.status)")
     t.check(waitUntil(20) { rr.status.ready && rr.model != nil }, "a model appears once there are enough yes and no decisions")
+    _ = waitUntil(30) { rr.status.trainedOn == rr.samples.count }          // the first fit (10 yes, 10 no) lands early; the last one has seen every decision
     t.check(fired > 0, "the owner is told when the model changes")
     t.check((rr.status.auc ?? 0) > 0.9 && (rr.status.accuracy ?? 0) > 0.8, "held-out accuracy reported to the user is high on separable data", "\(rr.status.summary)")
     let probs = test.cands.map { rr.probability(hand: test.hand($0), embedding: nil) }
@@ -123,17 +124,41 @@ func testAssist(_ t: inout TestRun) {
     t.section("swipe assistant: persistence and Core ML fallback")
     let dir = testTempDir()
     defer { try? FileManager.default.removeItem(at: dir) }
-    let proj = dir.appendingPathComponent("p.thonpicks")
-    let a = Reranker(); a.use(project: proj)
-    for (i, c) in train.cands.enumerated() { a.observe(key: "m1", id: "c\(i)", decision: c.yes ? "pick" : "reject", decoy: false, hand: train.hand(c), embedding: nil) }
+    let proj = dir.appendingPathComponent("p.thon")
+    let store = PickStore(); store.saveDelay = 0; store.openProject(file: proj)
+    let a = Reranker(); a.use(store: store)
+    for (i, c) in train.cands.enumerated() { a.observe(key: "m1", id: "c\(i)", decision: c.yes ? "pick" : "reject", decoy: false, hand: train.hand(c), embedding: [1, 2, 3]) }
     _ = waitUntil(20) { a.status.ready }
-    a.save()
-    t.check(FileManager.default.fileExists(atPath: dir.appendingPathComponent("p.assist.json").path), "samples are saved next to the project")
-    let b = Reranker(); b.use(project: proj)
+    a.save(); store.save()
+    let names = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).filter { !$0.hasPrefix(".") }
+    t.check(!names.contains { $0.hasSuffix(".assist.json") } && names.contains("p.thon"), "samples are saved inside the project, no separate file", "\(names)")
+    let store2 = PickStore(); store2.openProject(file: proj)
+    t.check(store2.project.assist != nil, "the .thon file carries the samples")
+    let b = Reranker(); b.use(store: store2)
+    t.check(b.samples.values.allSatisfy { $0.e == nil }, "embeddings are not written to the project")
     t.check(b.samples.count == a.samples.count && b.status.positives == a.status.positives, "samples load again")
     t.check(waitUntil(20) { b.status.ready }, "a reloaded project retrains by itself")
     b.reset()
     t.check(b.model == nil && b.samples.isEmpty && !b.status.ready, "reset forgets everything")
+    // a sidecar from an older version is imported once, and a reset is not undone by it
+    let dir2 = testTempDir(); defer { try? FileManager.default.removeItem(at: dir2) }
+    let p2 = dir2.appendingPathComponent("q.thon")
+    if let d = store.project.assist { try? d.write(to: dir2.appendingPathComponent("q.assist.json")) }
+    let s3 = PickStore(); s3.saveDelay = 0; s3.openProject(file: p2)
+    let c3 = Reranker(); c3.use(store: s3)
+    t.check(c3.samples.count == a.samples.count, "an older <name>.assist.json is imported", "\(c3.samples.count) vs \(a.samples.count)")
+    c3.reset(); s3.save()
+    let s4 = PickStore(); s4.openProject(file: p2)
+    let c4 = Reranker(); c4.use(store: s4)
+    t.check(c4.samples.isEmpty, "after reset the old sidecar does not come back")
+    // visible backup folders from older versions move into the hidden one
+    let dir3 = testTempDir(); defer { try? FileManager.default.removeItem(at: dir3) }
+    let old3 = dir3.appendingPathComponent("r_backups"); try? FileManager.default.createDirectory(at: old3, withIntermediateDirectories: true)
+    try? Data("{}".utf8).write(to: old3.appendingPathComponent("r_20200101_000000_000.thon"))
+    let s5 = PickStore(); s5.saveDelay = 0; s5.openProject(file: dir3.appendingPathComponent("r.thon")); _ = s5.save(forceBackup: true)
+    let hid = s5.backupDirectory(root: dir3)
+    let moved = (try? FileManager.default.contentsOfDirectory(atPath: hid.path)) ?? []
+    t.check(hid.lastPathComponent == ".r_backups" && moved.contains("r_20200101_000000_000.thon") && moved.count == 2 && !FileManager.default.fileExists(atPath: old3.path), "old visible backups are moved into the hidden folder", "\(moved)")
     t.check(CoreMLEmbedding.embed(gray: [1, 2, 3], size: 64) == nil, "embedding refuses malformed input")
     _ = CoreMLEmbedding.embed(gray: [UInt8](repeating: 128, count: 64 * 64), size: 64)       // nil or a vector; must not crash
     let e = Reranker(); e.useEmbedding = true

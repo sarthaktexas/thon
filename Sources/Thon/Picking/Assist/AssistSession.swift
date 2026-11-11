@@ -21,7 +21,7 @@ extension SwipeSession {
 
     /// A decision was recorded for the open micrograph: learn from it.
     func assistObserve(_ c: Card, decision: String, key: String) {
-        reranker.use(project: pc.store.projectURL)
+        reranker.use(store: pc.store)
         reranker.observe(key: key, id: c.id, decision: decision, decoy: c.decoy, hand: assistHand(c.x, c.y), embedding: assistEmbedding(c.x, c.y))
     }
 

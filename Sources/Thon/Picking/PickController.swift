@@ -309,7 +309,7 @@ final class PickController: ObservableObject {
     lazy var gallery = GalleryModel(pc: self)
     lazy var swipe = SwipeSession(pc: self)
     lazy var sort = SortSession(pc: self)
-    lazy var grid = GridSession(pc: self)
+    lazy var crops = CropSession(pc: self)
     private var classStar: URL?
 
     func loadClasses(star: URL, tolerancePx: Double? = nil) {

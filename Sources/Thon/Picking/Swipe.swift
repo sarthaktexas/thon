@@ -13,7 +13,7 @@ struct SwipeDecision: Codable, Equatable {
     var ms: Int?                      // dwell time
     var t: Double?                    // epoch seconds
     var view: String?                 // what the card looked like when decided (SwipeDisplay.logTag), nil in older logs
-    var mode: String?                 // nil / "swipe": candidate review; "grid": grid triage; "sort": classification of accepted picks
+    var mode: String?                 // nil / "swipe": candidate review; "grid": old grid triage; "sort": classification of accepted picks; "crop": crop editor
 
     enum CodingKeys: String, CodingKey { case id, decision, label, x, y, decoy, recentered, ms, t, view, mode }
 }
@@ -56,6 +56,7 @@ struct SwipeStats: Equatable {
     static func compute(_ logs: [SwipeLog]) -> SwipeStats {
         var s = SwipeStats()
         for l in logs { for d in l.decisions {
+            if d.mode == "crop" { continue }                       // crop-editor decisions are confirmations of circles, not candidate reviews
             if d.mode == "sort" { s.sorted += 1; continue }       // classification of already accepted picks says nothing about pick rates
             s.cards += 1
             switch d.decision { case "pick": s.pick += 1; case "reject": s.reject += 1; default: s.unsure += 1 }
@@ -219,7 +220,7 @@ final class SwipeSession: ObservableObject {
         let cards = makeDeck(key: key, depth: depth)
         queue = cards; total = cards.count; reviewed = 0; history = []; override = nil; builtKey = key; assistReordered = false
         cardChanged()
-        reranker.use(project: pc.store.projectURL)
+        reranker.use(store: pc.store)
         assistReorder()
     }
 

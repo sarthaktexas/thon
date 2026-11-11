@@ -79,7 +79,7 @@ enum SortScope: String, CaseIterable, Identifiable {
 func isSorted(_ pickID: String, in log: SwipeLog?) -> Bool {
     guard let log else { return false }
     return log.decisions.contains { d in
-        d.id == pickID && !d.decoy && (d.mode == "sort" || ((d.mode == nil || d.mode == "swipe") && (d.decision == "pick" || d.decision == "unsure")))
+        d.id == pickID && !d.decoy && (d.mode == "sort" || d.mode == "crop" || ((d.mode == nil || d.mode == "swipe") && (d.decision == "pick" || d.decision == "unsure")))
     }
 }
 

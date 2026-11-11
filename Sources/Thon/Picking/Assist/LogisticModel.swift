@@ -120,7 +120,9 @@ enum Logistic {
                 for i in te { oof[i] = m.probability(X[i]) }
             }
             guard ok, let a = auc(scores: oof, labels: y) else { continue }
-            let acc = Double((0..<n).filter { (oof[$0] >= 0.5) == (y[$0] > 0.5) }.count) / Double(n)
+            // balanced accuracy: a plain hit rate sits near the majority share when yes and no are uneven, and hardly moves while AUC does
+            let tp = pos.filter { oof[$0] >= 0.5 }.count, tn = neg.filter { oof[$0] < 0.5 }.count
+            let acc = 0.5 * (Double(tp) / Double(pos.count) + Double(tn) / Double(neg.count))
             if best == nil || a > best!.auc { best = CVResult(auc: a, accuracy: acc, lambda: lam, folds: k) }
         }
         return best

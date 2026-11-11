@@ -43,7 +43,8 @@ func runPickTests(_ args: [String]) -> Int32 {
     testSwipe(&t)
     testPhone(&t)
     testSwipeDisplay(&t)
-    testSortAndGrid(&t)
+    testSort(&t)
+    testCrops(&t)
     testCTF(&t)
     testMeasureAndUnits(&t)
     print("picktest: \(t.passed) passed, \(t.failed) failed")
@@ -339,12 +340,12 @@ func testStorePersistence(_ t: inout TestRun) {
     // backups + retention
     s.backupsToKeep = 3
     for i in 0..<6 { s.add(Pick(x: Double(i), y: 0, label: "side"), to: "x"); s.save(forceBackup: true); Thread.sleep(forTimeInterval: 0.01) }
-    let nb = (try? FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent("backups").path))?.count ?? -1
+    let nb = (try? FileManager.default.contentsOfDirectory(atPath: s.backupDirectory(root: dir).path))?.count ?? -1
     t.check(nb == 3, "backup retention keeps newest 3", "found \(nb)")
     // backup interval: a normal save right after a backup does not write another
     s.backupInterval = 3600; s.save(forceBackup: true)
     s.add(Pick(x: 9, y: 9, label: "side"), to: "x"); s.save()
-    t.check(((try? FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent("backups").path))?.count ?? -1) == 3, "no extra backup within interval")
+    t.check(((try? FileManager.default.contentsOfDirectory(atPath: s.backupDirectory(root: dir).path))?.count ?? -1) == 3, "no extra backup within interval")
     // atomic write leaves no temp files and replaces existing content
     let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
     t.check(!names.contains { $0.contains(".tmp") }, "no temp files left after saves", "\(names)")
@@ -1225,6 +1226,7 @@ func testSessions(_ t: inout TestRun) {
     let bk = backupCount(mm.backupDirectory(root: projDir))
     t.check(bk >= 1, "removing a session with picks writes a backup first", "\(bk)")
     t.check(((try? fm.contentsOfDirectory(atPath: mm.backupDirectory(root: projDir).path)) ?? []).allSatisfy { $0.hasPrefix("c1ql3_") && $0.hasSuffix(".thon") }, "backups are openable .thon files")
+    t.check(mm.backupDirectory(root: projDir).lastPathComponent.hasPrefix("."), "the backup directory is hidden")
 
     // export: one dataset per session, per-session filter, raw names relative to the project file
     let out = base.appendingPathComponent("export")

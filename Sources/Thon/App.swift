@@ -60,8 +60,8 @@ struct ThonApp: App {
                 Button("Dismiss All Candidates") { model.picks.dismissAllCandidates() }
                 Divider()
                 Button("Edit Labels…") { model.picks.openLabelEditor() }
-                Button("Grid Triage…") { model.picks.enabled = true; model.showGrid = true }.keyboardShortcut("t", modifiers: [.command, .option])
-                Button("Swipe Mode…") { model.showSwipe = true }.keyboardShortcut("s", modifiers: [.command, .option])
+                Button("Crop Editor…") { model.picks.enabled = true; model.showCrops = true }.keyboardShortcut("t", modifiers: [.command, .option])
+                Button("Swipe Mode (classic)…") { model.showSwipe = true }
                 Button("Phone Swiper…") { PhoneController.shared.openPanel(model: model) }.keyboardShortcut("p", modifiers: [.command, .option])
                 Button("Gallery…") { model.showGallery = true }.keyboardShortcut("g", modifiers: [.command, .option])
                 Button("Load RELION Classification…") { PickPanels.chooseClasses(model: model) }

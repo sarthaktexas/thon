@@ -100,7 +100,7 @@ final class AppModel: ObservableObject {
     @Published var inspectorTab: InspectorTab = .overview
     @Published var showGallery = false
     @Published var showSwipe = false
-    @Published var showGrid = false
+    @Published var showCrops = false
     @Published var showSessions = false
     @Published var collapsedSessions: Set<String> = []
 
@@ -506,7 +506,6 @@ final class AppModel: ObservableObject {
         case "m": measure.enabled.toggle(); return true
         case "p": picks.enabled.toggle(); return true
         case "g": showGallery = true; return true
-        case "s": if doc != nil { picks.enabled = true; showSwipe = true }; return true
         case "v": picks.showMarkers.toggle(); return true
         case "b": picks.showBoxes.toggle(); return true
         case "f": view.fit(); return true

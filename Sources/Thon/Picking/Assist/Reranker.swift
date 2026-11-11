@@ -16,6 +16,7 @@ final class Reranker: ObservableObject {
         var key: String, id: String
         var y: Float                       // 1 = accepted, 0 = rejected ("unsure" is not used)
         var decoy: Bool
+        var w: Float?                      // extra weight (nil = 1): a pick marked "maybe" counts half, a moved pick's old spot counts half
         var f: [Float]                     // CardFeatures.hand
         var e: [Float]?                    // optional Core ML embedding
     }
@@ -23,7 +24,9 @@ final class Reranker: ObservableObject {
     struct Status: Equatable {
         var positives = 0, negatives = 0
         var ready = false
-        var auc: Double?, accuracy: Double?
+        var auc: Double?
+        var accuracy: Double?              // balanced: mean of the share of yes decisions and of no decisions it got right
+        var folds = 0
         var trainedOn = 0
         var usingEmbedding = false
         var note: String?
@@ -33,14 +36,16 @@ final class Reranker: ObservableObject {
                 return "Learning from your decisions: \(positives) yes, \(negatives) no so far (needs \(need) of each)."
             }
             var s = "Trained on \(trainedOn) decisions"
-            if let a = accuracy, let u = auc { s += String(format: ". On cards it had not seen it agreed with you %.0f%% of the time (AUC %.2f)", a * 100, u) }
+            if positives < Reranker.fullEach || negatives < Reranker.fullEach { s += " (early estimate)" }
+            if let a = accuracy, let u = auc { s += String(format: ". On cards it had not seen it agreed with you %.1f%% (balanced over yes and no, %d-fold; AUC %.2f)", a * 100, folds, u) }
             s += usingEmbedding ? ", with Core ML image features." : "."
             if let n = note { s += " " + n }
             return s
         }
     }
 
-    static let minEach = 30
+    static let minEach = 10                              // first fit; below `fullEach` of either class the scores are labelled an early estimate
+    static let fullEach = 30
     static let refitEvery = 5
     static let exploreEvery = 5
     static let decoyNegativeWeight: Float = 0.3          // random-position decoys are easy negatives: count them, but less
@@ -55,21 +60,30 @@ final class Reranker: ObservableObject {
 
     private(set) var samples: [String: Sample] = [:]
     private var sinceFit = 0, fitToken = 0
+    private var fitting = false, fitAgain = false          // one fit at a time; requests that arrive meanwhile run once afterwards
     private let queue = DispatchQueue(label: "thon.assist", qos: .utility)
-    private(set) var sidecar: URL?
+    private(set) weak var store: PickStore?
+    private var boundURL: URL?
 
     private static func sampleKey(_ key: String, _ id: String) -> String { "\(key)@\(id)" }
 
     // MARK: samples
 
-    func observe(key: String, id: String, decision: String, decoy: Bool, hand: [Float]?, embedding: [Float]?) {
+    /// `fit: false` records the sample only (a batch, e.g. a whole crop, is followed by `finishBatch()`).
+    func observe(key: String, id: String, decision: String, decoy: Bool, hand: [Float]?, embedding: [Float]?, weight: Float? = nil, fit: Bool = true) {
         let k = Self.sampleKey(key, id)
         guard (decision == "pick" || decision == "reject"), let hand, hand.count == CardFeatures.handLength else { samples[k] = nil; refreshCounts(); return }
-        samples[k] = Sample(key: key, id: id, y: decision == "pick" ? 1 : 0, decoy: decoy, f: hand, e: embedding)
+        samples[k] = Sample(key: key, id: id, y: decision == "pick" ? 1 : 0, decoy: decoy, w: weight, f: hand, e: embedding)
         refreshCounts()
         sinceFit += 1
+        guard fit else { return }
         if status.positives >= Self.minEach && status.negatives >= Self.minEach && (model == nil || sinceFit >= Self.refitEvery) { refit() }
         else if sinceFit % 10 == 0 { save() }
+    }
+
+    /// After a batch of `observe(..., fit: false)`: refit once if there are enough decisions of both kinds.
+    func finishBatch() {
+        if status.positives >= Self.minEach && status.negatives >= Self.minEach { refit() } else { save() }
     }
 
     func forget(key: String, id: String) {
@@ -77,7 +91,7 @@ final class Reranker: ObservableObject {
     }
 
     func reset() {
-        fitToken += 1; samples = [:]; model = nil; modelUsesEmbedding = false; sinceFit = 0
+        fitToken += 1; fitAgain = false; samples = [:]; model = nil; modelUsesEmbedding = false; sinceFit = 0
         status = Status(); save(); onChange?()
     }
 
@@ -99,21 +113,25 @@ final class Reranker: ObservableObject {
         }
         let pos = set.filter { $0.y > 0.5 }.count
         guard pos >= Self.minEach, set.count - pos >= Self.minEach else { refreshCounts(); return }
-        fitToken += 1
+        if fitting { fitAgain = true; return }
+        fitting = true
         let token = fitToken
         let note: String? = (useEmbedding && !withE) ? "Core ML features are missing for most decisions, so hand-made features are used." : nil
         sinceFit = 0
         queue.async { [weak self] in
             let X = set.map { withE ? $0.f + ($0.e ?? []) : $0.f }
             let y = set.map { $0.y }
-            let w = set.map { $0.decoy && $0.y < 0.5 ? Reranker.decoyNegativeWeight : 1 }
-            let cv = Logistic.crossValidate(X, y, weights: w)
+            let w = set.map { ($0.decoy && $0.y < 0.5 ? Reranker.decoyNegativeWeight : 1) * ($0.w ?? 1) }
+            let cv = Logistic.crossValidate(X, y, weights: w, folds: set.count < 40 ? 3 : 5)
             let model = Logistic.fit(X, y, weights: w, lambda: cv?.lambda ?? 3)
             DispatchQueue.main.async {
-                guard let self, token == self.fitToken, let model else { return }
+                guard let self else { return }
+                self.fitting = false
+                defer { if self.fitAgain { self.fitAgain = false; self.refit() } }
+                guard token == self.fitToken, let model else { return }
                 self.model = model; self.modelUsesEmbedding = withE
                 var s = self.status
-                s.ready = true; s.auc = cv?.auc; s.accuracy = cv?.accuracy; s.trainedOn = set.count; s.usingEmbedding = withE; s.note = note
+                s.ready = true; s.auc = cv?.auc; s.accuracy = cv?.accuracy; s.folds = cv?.folds ?? 0; s.trainedOn = set.count; s.usingEmbedding = withE; s.note = note
                 self.status = s
                 self.save()
                 self.onChange?()
@@ -150,28 +168,33 @@ final class Reranker: ObservableObject {
         return out
     }
 
-    // MARK: persistence (a sidecar next to the project, so a model survives restarts without the micrographs)
+    // MARK: persistence (inside the project file, so a model survives restarts without the micrographs)
 
     private struct File: Codable { var version: Int; var samples: [Sample] }
 
-    static func sidecarURL(forProject url: URL?) -> URL? {
+    /// Older versions wrote `<project>.assist.json` next to the project; it is still read once if the project holds no samples yet.
+    static func legacySidecarURL(forProject url: URL?) -> URL? {
         url?.deletingPathExtension().appendingPathExtension("assist.json")
     }
 
-    /// Switches to the sidecar of another project (loading its samples and retraining once if enough are there).
-    func use(project url: URL?) {
-        let u = Self.sidecarURL(forProject: url)
-        guard u != sidecar else { return }
-        sidecar = u; fitToken += 1; samples = [:]; model = nil; modelUsesEmbedding = false; sinceFit = 0; status = Status()
-        if let u, let d = try? Data(contentsOf: u), let f = try? JSONDecoder().decode(File.self, from: d), f.version == CardFeatures.version {
+    /// Binds to the project of `store` (loading its samples and retraining once if enough are there).
+    func use(store: PickStore) {
+        guard store !== self.store || store.projectURL != boundURL else { return }
+        self.store = store; boundURL = store.projectURL
+        fitToken += 1; fitAgain = false; samples = [:]; model = nil; modelUsesEmbedding = false; sinceFit = 0; status = Status()
+        var data = store.project.assist
+        if data == nil, let u = Self.legacySidecarURL(forProject: store.projectURL) { data = try? Data(contentsOf: u) }
+        if let data, let f = try? JSONDecoder().decode(File.self, from: data), f.version == CardFeatures.version {
             for s in f.samples where s.f.count == CardFeatures.handLength { samples[Self.sampleKey(s.key, s.id)] = s }
         }
         refreshCounts(); refit()
     }
 
+    /// Writes the samples into the project (hand features only: Core ML embeddings are large and are recomputed when needed).
     func save() {
-        guard let u = sidecar else { return }
-        guard let d = try? JSONEncoder().encode(File(version: CardFeatures.version, samples: Array(samples.values))) else { return }
-        do { try d.write(to: u, options: .atomic) } catch { try? d.write(to: u) }
+        guard let store else { return }
+        let slim = samples.values.map { s -> Sample in var c = s; c.e = nil; return c }.sorted { ($0.key, $0.id) < ($1.key, $1.id) }
+        guard let d = try? JSONEncoder().encode(File(version: CardFeatures.version, samples: slim)) else { return }
+        store.setAssist(d)       // an empty list is stored too, so a reset is not undone by the legacy sidecar
     }
 }
