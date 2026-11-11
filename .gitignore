@@ -2,6 +2,11 @@
 .build_out/
 Thon.app/
 DM4Viewer.app/
+docs/
 .DS_Store
 .writetest
 .tmp/
+
+ios/ThonSwipe/*.xcodeproj/
+ios/ThonSwipe/ThonSwipe/Info.plist
+xcuserdata/

@@ -17,12 +17,12 @@
 * `--picktest`: new "crop editor" suite (tiles, hit test, edits, commit, undo, training examples, zoom out, early estimate); the grid part of the sort suite is gone.
 
 ## Phone swiper
-* New **Picks ▸ Phone Swiper…** (⌥⌘P): swipe through the candidates of the open micrograph on a phone on the same Wi-Fi. Switch on, scan the QR code, optionally Add to Home Screen. No app to install: Thon serves a web page while the switch is on (listens only then; pairing code in the link; plain HTTP on the local network). Guide: docs/PHONE.md, protocol: docs/PHONE_API.md.
+* New **Picks ▸ Phone Swiper…** (⌥⌘P): swipe through the candidates of the open micrograph on a phone on the same Wi-Fi. Switch on, scan the QR code, optionally Add to Home Screen. No app to install: Thon serves a web page while the switch is on (listens only then; pairing code in the link; plain HTTP on the local network).
 * The phone is a remote for the swipe deck (`SwipeSession`): decisions use the same code as the Mac (picks, undo, autosave, decoys kept blind, statistics, export). Cards are rendered on the Mac (same display settings as swipe mode) and sent as JPEG; the phone never gets the micrograph.
 * Labels: the phone reads the open project's label scheme (names, colors, hotkeys; exported labels only) and follows edits on the Mac. Up-swipe uses `uncertain`, or `maybe` in the Quality scheme (the Mac's swipe mode now does the same instead of skipping).
 * Offline: decisions queue on the phone and replay in order when Wi-Fi returns; a decision for a micrograph that is no longer open is dropped and listed.
 * New code: `Sources/Thon/Phone/`, web client in `Resources/phone/` (embedded by `scripts/gen_phone_assets.py`), `Tests/phone/client.test.js` (jsdom). `--picktest` has a "phone swiper API" suite. Info.plist gains the local-network usage text.
-* Not verified in the development sandbox (no sockets, GUI or phone): the listener itself, the Phone panel layout and QR code, and swipe feel. First-run checklist in docs/PHONE.md.
+* Not verified in the development sandbox (no sockets, GUI or phone): the listener itself, the Phone panel layout and QR code, and swipe feel.
 
 ## Grid triage, then sort by swiping
 * **Grid triage** (Picks tab ▸ Grid triage, or ⌥⌘T): a page of 3×3 (or 4×4) candidate crops, best score first. Click the real particles, Enter commits the page: marked tiles are accepted, unmarked tiles are dismissed. "Click junk" flips this (unmarked = particle). Right-click or U marks a tile *unsure*: it stays a candidate. Arrows + Space work without the mouse; A marks all, C clears, Z takes back the last page (one undo step per page).
@@ -49,7 +49,7 @@
 ## Welcome screen and shorter README
 * New welcome screen shown while nothing is open: actions on the left (Open Files… names DM3, DM4, MRC and MRCS), recent projects / folders / files on the right (context menu: Show in Finder, Remove from Recent). File ▸ Open Recent has the same list. The toolbar appears once something is open.
 * Recents are stored in UserDefaults (`recentItems`, last 10, missing paths are hidden). A single opened file or folder is remembered as itself; several files as their folder.
-* README cut to a short overview; features, command-line helpers, self-tests and file-format notes moved to docs/REFERENCE.md.
+* README cut to a short overview.
 * GUI not viewed on screen (typecheck only): check the welcome layout, Open Recent, and that opening an empty folder keeps the welcome screen and shows the alert.
 
 ## Projects with sessions (.thon)
