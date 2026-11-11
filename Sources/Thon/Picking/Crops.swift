@@ -97,7 +97,18 @@ final class CropSession: ObservableObject {
         pc.store.scheme.labels.filter { $0.exported && !Self.isMaybeLabel($0.id) && $0.id != "good" && $0.id != "reject" }.map { $0.id }
     }
     var isViewScheme: Bool { viewLabelIDs.count >= 2 }
-    func isRejectLabel(_ id: String) -> Bool { pc.store.scheme.label(id)?.exported == false }
+    /// Types you can give a circle. Reject is not one of them: deleting a circle is the only way to reject it
+    /// (a circle the picker found counts as a "no" for the assistant; a circle you added just goes away).
+    var typeLabels: [PickLabel] { pc.store.scheme.labels.filter { $0.exported } }
+    func isAssignable(_ id: String) -> Bool { pc.store.scheme.label(id)?.exported != false }
+    /// The type of the next circle you add: the active type, unless that one is not an exported type (then the first exported one).
+    var penLabelID: String { isAssignable(pc.activeLabel) ? pc.activeLabel : (typeLabels.first?.id ?? pc.activeLabel) }
+    /// Candidates carry whatever label was active when the picker ran, which may have been Reject; here they take the pen type.
+    private func normalized(_ it: Item) -> Item {
+        var i = it
+        if !isAssignable(i.label) { i.label = penLabelID; i.level = Self.isMaybeLabel(i.label) ? .maybe : .sure }
+        return i
+    }
 
     /// Learns the typical size of each view from the circles you sized by hand (picks with their own diameter) across the project.
     func refreshSizeTyper() {
@@ -128,7 +139,7 @@ final class CropSession: ObservableObject {
     }
 
     func relevant(_ p: Pick) -> Bool {
-        p.status == .accepted || (p.status == .candidate && (p.score ?? .infinity) >= pc.scoreCutoff)
+        (p.status == .accepted && isAssignable(p.label)) || (p.status == .candidate && (p.score ?? .infinity) >= pc.scoreCutoff)
     }
 
     func allTiles() -> [Tile] {
@@ -164,7 +175,7 @@ final class CropSession: ObservableObject {
     private func loadItems() {
         selected = nil; editHistory = []; items = []
         if let t = current, let k = key {
-            items = picksIn(t, window: windowPx, key: k).map { p in var i = Self.item(from: p); i.diameterNm = pc.store.diameterNm(p); return i }
+            items = picksIn(t, window: windowPx, key: k).map { p in var i = Self.item(from: p); i.diameterNm = pc.store.diameterNm(p); return normalized(i) }
         }
         shownAt = Date(); revision += 1; sw.viewChanged()
     }
@@ -179,7 +190,7 @@ final class CropSession: ObservableObject {
         guard let t = current, let k = key else { return }
         let have = Set(items.map { $0.id })
         for p in picksIn(t, window: windowPx, key: k) where !have.contains(p.id) {
-            var i = Self.item(from: p); i.diameterNm = pc.store.diameterNm(p); items.append(i)
+            var i = Self.item(from: p); i.diameterNm = pc.store.diameterNm(p); items.append(normalized(i))
         }
     }
 
@@ -283,7 +294,7 @@ final class CropSession: ObservableObject {
         beginEdit()
         let (cx, cy) = (min(max(x, 0), pc.imageSize.width - 1), min(max(y, 0), pc.imageSize.height - 1))
         let nm = penNm > 0 ? penNm : defaultDiameterNm
-        let label = penNm > 0 ? (typeFromSize(nm, current: pc.activeLabel) ?? pc.activeLabel) : pc.activeLabel
+        let label = penNm > 0 ? (typeFromSize(nm, current: penLabelID) ?? penLabelID) : penLabelID
         let it = Item(id: Pick.newID(), x: cx, y: cy, diameterNm: nm, level: Self.isMaybeLabel(label) ? .maybe : .sure, label: label,
                       isNew: true, untouched: false, removed: false, orig: nil)
         items.append(it); selected = it.id; revision += 1
@@ -305,7 +316,7 @@ final class CropSession: ObservableObject {
     }
     /// The one place a circle's type changes (right-click menu, hotkeys, the type list, Space). The level follows from it.
     func setLabel(_ id: String, _ label: String) {
-        guard let i = items.firstIndex(where: { $0.id == id }), items[i].label != label || items[i].untouched else { return }
+        guard isAssignable(label), let i = items.firstIndex(where: { $0.id == id }), items[i].label != label || items[i].untouched else { return }
         beginEdit(); items[i].label = label; items[i].level = Self.isMaybeLabel(label) ? .maybe : .sure; items[i].untouched = false
     }
     /// Reject: a circle you added disappears; a suggestion is dismissed when the crop is confirmed.
@@ -318,7 +329,7 @@ final class CropSession: ObservableObject {
     }
     /// Space: the next type in the scheme (wraps around).
     func cycleLabel(_ id: String) {
-        let ls = pc.store.scheme.labels
+        let ls = typeLabels
         guard !ls.isEmpty, let it = items.first(where: { $0.id == id }) else { return }
         let i = ls.firstIndex { $0.id == it.label } ?? -1
         let next = ls[(i + 1) % ls.count].id
@@ -387,13 +398,11 @@ final class CropSession: ObservableObject {
         for it in all {
             if it.isNew && it.removed { continue }
             let moved = it.orig.map { hypot($0.x - it.x, $0.y - it.y) > 0.25 * px(pc.store.diameterNm($0)) } ?? false
-            log.decisions.append(SwipeDecision(id: it.id, decision: (it.removed || isRejectLabel(it.label)) ? "reject" : "pick", label: it.removed ? nil : it.label, x: it.x, y: it.y, decoy: false,
+            log.decisions.append(SwipeDecision(id: it.id, decision: it.removed ? "reject" : "pick", label: it.removed ? nil : it.label, x: it.x, y: it.y, decoy: false,
                                                recentered: moved, ms: dwell, t: now, view: sw.display.logTag, mode: "crop"))
             logged += 1
             if it.removed, let o = it.orig {
                 teach(it.id, x: o.x, y: o.y, dNm: pc.store.diameterNm(o), yes: false, weight: nil)
-            } else if isRejectLabel(it.label) {
-                teach(it.id, x: it.x, y: it.y, dNm: it.diameterNm, yes: false, weight: nil)            // typed "reject": kept in the project, a no for the assistant
             } else {
                 teach(it.id, x: it.x, y: it.y, dNm: it.diameterNm, yes: true, weight: it.level == .maybe ? 0.5 : nil)
                 if moved, let o = it.orig { teach("o_" + it.id, x: o.x, y: o.y, dNm: pc.store.diameterNm(o), yes: false, weight: 0.5, picture: false) }

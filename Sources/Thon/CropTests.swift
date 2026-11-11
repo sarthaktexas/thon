@@ -101,6 +101,26 @@ func testCrops(_ t: inout TestRun) {
     t.check(cs.items.contains { $0.id == "far" } && cs.windowPx == 2 * cs.sidePx, "zoom out ×2 adds the circles of the wider window")
     cs.zoomOut = false
 
+    // --- reject is not a type; deleting is the only way to reject
+    t.section("crop editor: no reject type")
+    let aT = cs.current!
+    _ = c.store.perform(k, "rej") { l in
+        l.append(Pick(id: "rj1", x: aT.cx, y: aT.cy, label: "reject", score: 9, source: .auto, status: .candidate))
+        l.append(Pick(id: "rj2", x: aT.cx + 8, y: aT.cy + 8, label: "reject", source: .manual, status: .accepted))
+    }
+    c.activeLabel = "reject"
+    cs.rebuild()
+    t.check(!cs.typeLabels.contains { $0.id == "reject" } && cs.penLabelID != "reject", "Reject is not offered as a type, and an active Reject falls back to an exported type", "\(cs.typeLabels.map { $0.id }) \(cs.penLabelID)")
+    t.check(cs.items.first { $0.id == "rj1" }.map { $0.label == cs.penLabelID } == true, "a candidate that carries the Reject label shows as a normal type")
+    t.check(!cs.items.contains { $0.id == "rj2" }, "a pick you already rejected in the viewer does not come back as a circle")
+    cs.setLabel("rj1", "reject")
+    t.check(cs.items.first { $0.id == "rj1" }?.label != "reject", "a circle cannot be set to Reject")
+    let nr = cs.add(x: aT.cx + 30, y: aT.cy + 30)!
+    t.check(cs.items.first { $0.id == nr }?.label != "reject", "a new circle never gets the Reject label")
+    cs.remove(nr)
+    t.check(!cs.items.contains { $0.id == nr }, "removing a circle you added just drops it")
+    c.activeLabel = "ring_top"
+
     // --- size typing (view schemes)
     t.section("crop editor: type from size")
     let st = SizeTyper.learn([("ring_top", 26), ("ring_top", 28), ("ring_top", 27), ("side", 17), ("side", 19), ("side", 18), ("tilted", 22)])
