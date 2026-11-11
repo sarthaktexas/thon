@@ -219,3 +219,12 @@ final class SortSession: ObservableObject {
         return t.height < 0 ? .up : .down
     }
 }
+
+extension PickController {
+    /// Accepted auto-picks of the current micrograph that have not been sorted into a label yet (drawn white in the overlay).
+    func unsortedPickIDs() -> Set<String> {
+        guard let key = currentKey else { return [] }
+        let log = store.record(key).swipe
+        return Set(store.accepted(key).filter { $0.source == .auto && !isSorted($0.id, in: log) }.map { $0.id })
+    }
+}

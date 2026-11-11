@@ -25,11 +25,12 @@ struct PickOverlay: View {
             let sel = pc.selection
             let boxPts = pc.boxPx * ppp
             let visibleRect = CGRect(x: -40, y: -40, width: size.width + 80, height: size.height + 80)
+            let unsorted = pc.unsortedPickIDs()
             for p in pc.visiblePicks {
                 let c = g.pickToView(x: p.x, y: p.y)
                 let r = pc.diameterPx(p) * ppp / 2
                 guard visibleRect.insetBy(dx: -r, dy: -r).contains(c) else { continue }
-                Self.drawPick(&ctx, p, at: c, radius: r, pc: pc, store: store, selected: sel.contains(p.id), boxPts: boxPts)
+                Self.drawPick(&ctx, p, at: c, radius: r, pc: pc, store: store, selected: sel.contains(p.id), boxPts: boxPts, unsorted: unsorted.contains(p.id))
             }
             if let b = pc.boxRect {
                 let a = g.pickToView(x: b.minX, y: b.minY), z = g.pickToView(x: b.maxX, y: b.maxY)
@@ -44,9 +45,9 @@ struct PickOverlay: View {
     /// Draws one pick (shape, candidate dash, selection halo, box, "?" and score) at view point `c` with radius `r` in points.
     /// Shared by the main overlay and the loupe so both look identical.
     static func drawPick(_ ctx: inout GraphicsContext, _ p: Pick, at c: CGPoint, radius r: Double,
-                         pc: PickController, store: PickStore, selected: Bool, boxPts: Double) {
+                         pc: PickController, store: PickStore, selected: Bool, boxPts: Double, unsorted: Bool = false) {
         let lab = store.scheme.label(p.label)
-        let color = (pc.showClassColors ? pc.classColor(of: p).map { swiftUIColor($0) } : nil) ?? lab.map { swiftUIColor($0.color) } ?? .gray
+        let color = unsorted ? Color.white : (pc.showClassColors ? pc.classColor(of: p).map { swiftUIColor($0) } : nil) ?? lab.map { swiftUIColor($0.color) } ?? .gray
         let shape = lab?.shape ?? .circle
         let isCand = p.status == .candidate
         let style = isCand ? StrokeStyle(lineWidth: 1.5, dash: [4, 3]) : StrokeStyle(lineWidth: 1.6)
