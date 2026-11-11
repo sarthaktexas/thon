@@ -37,24 +37,33 @@ struct CropView: View {
         self.cl = model.picks.crops.classifier; self.rr = model.picks.swipe.reranker; self.store = model.picks.store
     }
 
-    private let side: CGFloat = 640
+    /// Edge of the square canvas; follows the space the sheet gives it (see `body`).
+    @State private var side: CGFloat = 600
+    @State private var showHelp = false
+    @State private var showMoreDisplay = false
+    @State private var showOrdering = false
+    private let sidebarW: CGFloat = 280
     private let outPx = 960
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             header
-            if cs.done { finished } else {
-                tools
-                canvas
-                footer
+            GeometryReader { geo in
+                let reserved: CGFloat = cs.done ? 0 : 64                     // footer and hint line under the canvas
+                let s = max(320, min(geo.size.height - reserved, geo.size.width - sidebarW - 20)).rounded(.down)
+                HStack(alignment: .top, spacing: 20) {
+                    VStack(spacing: 8) {
+                        if cs.done { finished } else { canvas; footer }
+                    }.frame(width: side)
+                    sidebar
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .onAppear { side = s }
+                .onChange(of: s) { _, v in side = v }
             }
-            assist
-            DisplayPanel(sw: sw, keysHint: "V denoise · , . brightness · - = contrast · I invert · 0 reset")
-            Text("Click empty ground to add a circle · drag a circle to move it · pinch, ↑ ↓ or the slider to resize · double-click a circle to remove it · Space switches green / yellow · Return confirms the crop and goes on · Z undoes. Circles you leave alone count as confirmed.")
-                .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(width: side)
         }
         .padding(16)
-        .frame(minWidth: 680, minHeight: showDisplay ? 960 : 840)
+        .frame(minWidth: 900, idealWidth: 1040, minHeight: 660, idealHeight: 780)
         .focusable().focused($focused).focusEffectDisabled()
         .onKeyPress(phases: .down) { handle($0) }
         .onAppear { focused = true; cs.rebuild() }
@@ -66,48 +75,156 @@ struct CropView: View {
 
     private var header: some View {
         VStack(spacing: 6) {
-            HStack {
-                Text(pc.currentKey.map { ($0 as NSString).lastPathComponent } ?? "–").font(.system(.headline, design: .monospaced))
+            HStack(spacing: 12) {
+                Text(pc.currentKey.map { ($0 as NSString).lastPathComponent } ?? "–").font(.system(.headline, design: .monospaced)).lineLimit(1)
                 Spacer()
-                if !cs.done { Text("crop \(cs.reviewedCount + 1) / \(cs.tilesTotal)").monospacedDigit() }
+                if !cs.done { Text("crop \(cs.reviewedCount + 1) / \(cs.tilesTotal)").monospacedDigit().foregroundStyle(.secondary) }
+                Button { showHelp.toggle() } label: { Image(systemName: "questionmark.circle") }.buttonStyle(.borderless).help("How to use the crop editor")
+                    .popover(isPresented: $showHelp, arrowEdge: .bottom) { helpText }
                 Button("Close") { model.showCrops = false }.keyboardShortcut(.cancelAction)
             }
             ProgressView(value: Double(cs.reviewedCount), total: Double(max(cs.tilesTotal, 1)))
-        }.frame(width: side)
+        }
     }
 
-    private var tools: some View {
+    private var helpText: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Crop editor").font(.headline)
+            Group {
+                Text("Click empty ground to add a circle.")
+                Text("Drag a circle to move it.")
+                Text("Pinch, ↑ ↓ or the size slider to resize it.")
+                Text("Double-click a circle (or Delete) to remove it.")
+                Text("Space switches green (sure) and yellow (maybe).")
+                Text("Return confirms the crop and goes on; Z undoes.")
+                Text("Circles you leave alone count as confirmed.")
+                Text("Display keys: V denoise · , . brightness · - = contrast · I invert · 0 reset.")
+            }.font(.callout).foregroundStyle(.secondary)
+        }.padding(14).frame(width: 340, alignment: .leading)
+    }
+
+    // MARK: sidebar
+
+    private var sidebar: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                circleSection
+                Divider()
+                cropSection
+                Divider()
+                displaySection
+                Divider()
+                orderingSection
+            }.padding(.trailing, 6)
+        }.frame(width: sidebarW)
+    }
+
+    private func sectionTitle(_ t: String) -> some View { Text(t).font(.subheadline.weight(.semibold)) }
+
+    private var circleSection: some View {
         let sel = cs.items.first { $0.id == cs.selected }
         let nm = sel?.diameterNm ?? (cs.penNm > 0 ? cs.penNm : cs.defaultDiameterNm)
         let lo = cs.defaultDiameterNm * 0.2, hi = cs.defaultDiameterNm * 4
-        return VStack(spacing: 6) {
-            HStack(spacing: 10) {
-                Text("Circle").font(.caption.weight(.semibold))
+        return VStack(alignment: .leading, spacing: 10) {
+            sectionTitle(sel == nil ? "New circles" : "Selected circle")
+            HStack(spacing: 8) {
                 levelButton(.sure, color: .green, title: "Sure")
                 levelButton(.maybe, color: .yellow, title: "Maybe")
-                if store.scheme.labels.count > 1 {
+            }
+            if store.scheme.labels.count > 1 {
+                HStack {
+                    Text("Label").font(.caption).foregroundStyle(.secondary)
                     Picker("", selection: Binding(get: { sel?.label ?? pc.activeLabel }, set: { l in pc.activeLabel = l; if let s = cs.selected { cs.setLabel(s, l) } })) {
                         ForEach(store.scheme.labels) { Text($0.name).tag($0.id) }
-                    }.labelsHidden().frame(width: 130)
+                    }.labelsHidden()
                 }
-                Spacer()
-                Text(sel == nil ? "new circles" : "selected").font(.caption).foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text("Size").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Text("Ø " + LengthUnits.format(nm: nm, useAngstroms: units.angstroms)).font(.caption).monospacedDigit()
+                }
                 Slider(value: Binding(get: { min(max(nm, lo), hi) }, set: { v in
                     if let s = cs.selected { cs.setDiameter(s, nm: v) } else { cs.penNm = v }
-                }), in: lo...hi) { editing in if editing, cs.selected != nil { cs.beginEdit() } }.frame(width: 160)
-                Text("Ø " + LengthUnits.format(nm: nm, useAngstroms: units.angstroms)).font(.caption).monospacedDigit().frame(width: 84, alignment: .leading)
+                }), in: lo...hi) { editing in if editing, cs.selected != nil { cs.beginEdit() } }
             }
-            HStack(spacing: 12) {
-                Toggle("Zoom out ×2", isOn: $cs.zoomOut).toggleStyle(.checkbox).font(.caption)
-                    .help("Shows twice the width, for a particle that does not fit the crop. Circles of the wider window join this crop.")
-                Stepper(value: $cs.sideDiameters, in: 2...12, step: 1) { Text(String(format: "Crop %.0f × particle width", cs.sideDiameters)).font(.caption) }.fixedSize()
-                Picker("", selection: $cs.order) { ForEach(CropSession.Order.allCases) { Text($0.rawValue).tag($0) } }
-                    .pickerStyle(.segmented).labelsHidden().frame(width: 220)
-                Toggle("Empty crops too", isOn: $cs.includeEmpty).toggleStyle(.checkbox).font(.caption)
-                    .help("Also visit crops without any circle, to add particles the picker missed.")
+        }
+    }
+
+    private var cropSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("Crops")
+            Picker("", selection: $cs.order) { ForEach(CropSession.Order.allCases) { Text($0.rawValue).tag($0) } }
+                .pickerStyle(.segmented).labelsHidden()
+            Stepper(value: $cs.sideDiameters, in: 2...12, step: 1) { Text(String(format: "Width: %.0f × particle", cs.sideDiameters)).font(.callout) }
+            Toggle("Zoom out ×2", isOn: $cs.zoomOut).toggleStyle(.checkbox)
+                .help("Shows twice the width, for a particle that does not fit the crop. Circles of the wider window join this crop.")
+            Toggle("Include empty crops", isOn: $cs.includeEmpty).toggleStyle(.checkbox)
+                .help("Also visit crops without any circle, to add particles the picker missed.")
+        }
+    }
+
+    private var displaySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                sectionTitle("Display")
                 Spacer()
+                Button("Reset") { sw.display.resetTone(); sw.display.denoise = .none }.controlSize(.small).help("Reset display (0)")
             }
-        }.frame(width: side)
+            Picker("", selection: Binding(get: { sw.display.denoise }, set: { sw.display.select($0) })) {
+                ForEach(SwipeDenoise.allCases) { Text($0.menuName).tag($0) }
+            }.labelsHidden()
+            if sw.display.isDenoised {
+                if sw.display.denoise.usesSize {
+                    dSlider(sw.display.denoise == .median ? "Radius" : "Size σ", $sw.display.size, sw.display.denoise.sizeRange,
+                            step: sw.display.denoise == .median ? 1 : 0.1,
+                            text: sw.display.denoise == .median ? String(format: "%d px", sw.display.medianRadius) : String(format: "%.1f px", sw.display.size))
+                }
+                if sw.display.denoise.usesH {
+                    dSlider(sw.display.denoise == .bilateral ? "Range" : "Strength", $sw.display.h, 0.3...3, step: 0.1, text: String(format: "%.1f σn", sw.display.h))
+                }
+            }
+            dSlider("Brightness", $sw.display.brightness, -1...1, step: 0.01, text: String(format: "%+.2f", sw.display.brightness))
+            dSlider("Contrast", Binding(get: { log2(sw.display.contrast) }, set: { sw.display.contrast = pow(2, $0) }), -2...2, step: 0.05,
+                    text: String(format: "×%.2f", sw.display.contrast))
+            Toggle("Invert", isOn: $sw.display.invert).toggleStyle(.checkbox)
+            DisclosureGroup("More", isExpanded: $showMoreDisplay) {
+                VStack(alignment: .leading, spacing: 8) {
+                    dSlider("Gamma", $sw.display.gamma, 0.4...2.5, step: 0.05, text: String(format: "%.2f", sw.display.gamma))
+                    Picker("Window", selection: $sw.display.tone) { ForEach(SwipeTone.allCases) { Text($0.menuName).tag($0) } }
+                        .pickerStyle(.menu)
+                        .help("Whole micrograph: the same window on every crop, so brightness is comparable. This card: stretch each crop to its own 0.5–99.5 % range.")
+                    Toggle("Show true pixels", isOn: $sw.display.pixelated).toggleStyle(.checkbox)
+                        .help("Nearest-neighbour: every image pixel is a visible square, nothing interpolated.")
+                    Toggle("Keep on next crops", isOn: $sw.pinProcessing).toggleStyle(.checkbox)
+                        .help("Off: every new crop starts raw. Brightness and contrast always carry over.")
+                    if sw.display.isDenoised, let n = sw.cardNoiseSigma {
+                        Text(String(format: "σn ≈ %.3g", n)).font(.caption).foregroundStyle(.secondary)
+                            .help("Noise σ estimated from this crop's raw pixels (assumes uncorrelated noise, so it is a lower bound).")
+                    }
+                }.padding(.top, 6)
+            }.font(.callout)
+        }
+    }
+
+    private func dSlider(_ name: String, _ v: Binding<Double>, _ r: ClosedRange<Double>, step: Double, text: String) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack { Text(name).font(.caption).foregroundStyle(.secondary); Spacer(); Text(text).font(.caption).monospacedDigit() }
+            Slider(value: v, in: r, step: step)
+        }
+    }
+
+    private var orderingSection: some View {
+        DisclosureGroup(isExpanded: $showOrdering) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(rr.status.summary).font(.caption).foregroundStyle(.secondary)
+                Toggle("Core ML model", isOn: $cl.enabled).toggleStyle(.checkbox)
+                    .help("Trains Apple's image classifier on the crops you review, in the background, to order the remaining crops. The hand-feature model above is used until it is ready, or when it fails.")
+                Text(cl.message).font(.caption).foregroundStyle(.secondary)
+                Text("Neither model decides anything: they only choose which crop comes next (uncertain first).").font(.caption).foregroundStyle(.tertiary)
+            }.padding(.top, 6)
+        } label: { sectionTitle("Learning from your decisions") }
     }
 
     private func levelButton(_ l: CropSession.Level, color: Color, title: String) -> some View {
@@ -115,8 +232,8 @@ struct CropView: View {
         return Button { cs.level = l } label: {
             HStack(spacing: 5) {
                 Circle().stroke(color, lineWidth: 2.5).frame(width: 16, height: 16)
-                Text(title).font(.caption)
-            }.padding(.horizontal, 8).padding(.vertical, 3)
+                Text(title).font(.callout)
+            }.frame(maxWidth: .infinity).padding(.vertical, 6)
                 .background(on ? color.opacity(0.22) : Color.clear, in: Capsule())
                 .overlay(Capsule().stroke(on ? color : Color.secondary.opacity(0.4), lineWidth: on ? 1.5 : 1))
         }.buttonStyle(.plain)
@@ -184,25 +301,18 @@ struct CropView: View {
 
     private var footer: some View {
         let c = cs.counts
-        return HStack(spacing: 12) {
-            Text("this crop:  \(c.sure) sure · \(c.maybe) maybe · \(c.removed) removed").font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            Button { cs.undo() } label: { Label("Undo (Z)", systemImage: "arrow.uturn.backward") }.disabled(!cs.canUndo).controlSize(.small)
-            Button("Skip") { cs.skip() }.disabled(cs.remaining < 2).controlSize(.small)
-            Button { cs.commit() } label: { Text("Next crop  ↵") }.buttonStyle(.borderedProminent)
-        }.frame(width: side)
-    }
-
-    private var assist: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(rr.status.summary).font(.caption2).foregroundStyle(.secondary)
-            HStack(spacing: 8) {
-                Toggle("Core ML model", isOn: $cl.enabled).toggleStyle(.checkbox).font(.caption2)
-                    .help("Trains Apple's image classifier on the crops you review, in the background, to order the remaining crops. The hand-feature model above is used until it is ready, or when it fails.")
-                Text(cl.message).font(.caption2).foregroundStyle(.secondary)
+        return VStack(spacing: 6) {
+            HStack(spacing: 10) {
+                Text("\(c.sure) sure · \(c.maybe) maybe · \(c.removed) removed").font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                Spacer(minLength: 8)
+                Button { cs.undo() } label: { Label("Undo", systemImage: "arrow.uturn.backward") }.disabled(!cs.canUndo).controlSize(.small).help("Undo (Z)")
+                Button("Skip") { cs.skip() }.disabled(cs.remaining < 2).controlSize(.small)
+                Button { cs.commit() } label: { Text("Next crop  ↵") }.buttonStyle(.borderedProminent)
             }
-            Text("Neither model decides anything: they only choose which crop comes next (uncertain first).").font(.caption2).foregroundStyle(.tertiary)
-        }.frame(width: side, alignment: .leading)
+            Text("Click to add · drag to move · pinch or ↑ ↓ to resize · double-click to remove · Space: sure / maybe")
+                .font(.caption2).foregroundStyle(.tertiary).lineLimit(1).minimumScaleFactor(0.7)
+        }
     }
 
     private var finished: some View {
