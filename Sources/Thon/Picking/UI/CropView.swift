@@ -11,7 +11,8 @@ final class CropImageCache {
 }
 
 /// Crop editor: one crop of the micrograph with its circles. Click empty ground to add a circle, drag a circle to move it,
-/// pinch (or the size slider, or the up and down keys) to resize it, double-click a circle to remove it. Next confirms the crop.
+/// pinch (or the size slider, or the up and down keys) to resize it, right-click a circle to change its type, double-click
+/// a circle to remove it. A circle is drawn in the colour of its type. Next confirms the crop.
 struct CropView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var pc: PickController
@@ -95,7 +96,8 @@ struct CropView: View {
                 Text("Drag a circle to move it.")
                 Text("Pinch, ↑ ↓ or the size slider to resize it.")
                 Text("Double-click a circle (or Delete) to remove it.")
-                Text("Space switches green (sure) and yellow (maybe).")
+                Text("Right-click a circle to change its type (or press its type's number key; Space steps to the next type).")
+                Text("A circle is drawn in the colour of its type; dashed = a suggestion nobody has touched.")
                 Text("Return confirms the crop and goes on; Z undoes.")
                 Text("Circles you leave alone count as confirmed.")
                 Text("Display keys: V denoise · , . brightness · - = contrast · I invert · 0 reset.")
@@ -125,18 +127,20 @@ struct CropView: View {
         let sel = cs.items.first { $0.id == cs.selected }
         let nm = sel?.diameterNm ?? (cs.penNm > 0 ? cs.penNm : cs.defaultDiameterNm)
         let lo = cs.defaultDiameterNm * 0.2, hi = cs.defaultDiameterNm * 4
+        let cur = sel?.label ?? pc.activeLabel
         return VStack(alignment: .leading, spacing: 10) {
-            sectionTitle(sel == nil ? "New circles" : "Selected circle")
-            HStack(spacing: 8) {
-                levelButton(.sure, color: .green, title: "Sure")
-                levelButton(.maybe, color: .yellow, title: "Maybe")
-            }
-            if store.scheme.labels.count > 1 {
-                HStack {
-                    Text("Label").font(.caption).foregroundStyle(.secondary)
-                    Picker("", selection: Binding(get: { sel?.label ?? pc.activeLabel }, set: { l in pc.activeLabel = l; if let s = cs.selected { cs.setLabel(s, l) } })) {
-                        ForEach(store.scheme.labels) { Text($0.name).tag($0.id) }
-                    }.labelsHidden()
+            sectionTitle(sel == nil ? "Type of new circles" : "Type of selected circle")
+            VStack(spacing: 4) { ForEach(store.scheme.labels) { typeRow($0, current: cur == $0.id) } }
+            Text("Right-click a circle to change its type.").font(.caption2).foregroundStyle(.tertiary)
+            if cs.isViewScheme {
+                VStack(alignment: .leading, spacing: 3) {
+                    Toggle("Set type from circle size", isOn: $cs.sizeTyping).toggleStyle(.checkbox)
+                        .help("When you resize a circle, its type becomes the view whose typical size is closest. Typical sizes are learned from circles you sized by hand.")
+                    if cs.sizeTyping {
+                        Text(cs.sizeTyper.map { t in "Learned: " + t.centres.map { c in (store.scheme.label(c.id)?.name ?? c.id) + " ≈ " + LengthUnits.format(nm: c.nm, useAngstroms: units.angstroms) }.joined(separator: " · ") }
+                             ?? "Not learned yet: needs \(SizeTyper.minEach) hand-sized circles for each of two views.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
             }
             VStack(alignment: .leading, spacing: 2) {
@@ -149,6 +153,42 @@ struct CropView: View {
                     if let s = cs.selected { cs.setDiameter(s, nm: v) } else { cs.penNm = v }
                 }), in: lo...hi) { editing in if editing, cs.selected != nil { cs.beginEdit() } }
             }
+        }
+    }
+
+    private func typeRow(_ l: PickLabel, current on: Bool) -> some View {
+        let color = swiftUIColor(l.color)
+        return Button {
+            pc.activeLabel = l.id
+            if let s = cs.selected { cs.setLabel(s, l.id) }
+            focused = true
+        } label: {
+            HStack(spacing: 8) {
+                Circle().stroke(color, lineWidth: 2.5).frame(width: 14, height: 14)
+                Text(l.name).font(.callout).lineLimit(1)
+                Spacer(minLength: 4)
+                if !l.key.isEmpty { Text(l.key).font(.caption.monospaced()).foregroundStyle(.secondary) }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(on ? color.opacity(0.2) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(on ? color : Color.secondary.opacity(0.3), lineWidth: on ? 1.5 : 1))
+            .contentShape(Rectangle())
+        }.buttonStyle(.plain)
+    }
+
+    /// Right-click menu of the circle under the pointer: its type, and remove.
+    @ViewBuilder private var circleMenu: some View {
+        if let it = hoverItem {
+            ForEach(store.scheme.labels) { l in
+                Button {
+                    cs.selected = it.id; cs.setLabel(it.id, l.id); pc.activeLabel = l.id
+                } label: {
+                    let name = l.key.isEmpty ? l.name : "\(l.name)   (\(l.key))"
+                    if it.label == l.id { Label(name, systemImage: "checkmark") } else { Text(name) }
+                }
+            }
+            Divider()
+            Button(role: .destructive) { cs.remove(it.id) } label: { Label("Remove circle", systemImage: "trash") }
         }
     }
 
@@ -227,18 +267,6 @@ struct CropView: View {
         } label: { sectionTitle("Learning from your decisions") }
     }
 
-    private func levelButton(_ l: CropSession.Level, color: Color, title: String) -> some View {
-        let on = cs.level == l
-        return Button { cs.level = l } label: {
-            HStack(spacing: 5) {
-                Circle().stroke(color, lineWidth: 2.5).frame(width: 16, height: 16)
-                Text(title).font(.callout)
-            }.frame(maxWidth: .infinity).padding(.vertical, 6)
-                .background(on ? color.opacity(0.22) : Color.clear, in: Capsule())
-                .overlay(Capsule().stroke(on ? color : Color.secondary.opacity(0.4), lineWidth: on ? 1.5 : 1))
-        }.buttonStyle(.plain)
-    }
-
     private var canvas: some View {
         let sig = "\(pc.currentKey ?? "")|\(pc.pixels.count)|\(cs.current?.id ?? -1)|\(cs.windowPx)|\(sw.display)"
         let img = cache.get(sig: sig) { cs.cropImage(out: outPx).flatMap { grayCGImage($0, width: outPx, height: outPx) } }
@@ -257,6 +285,7 @@ struct CropView: View {
                 }
         }
         .frame(width: side, height: side).clipped()
+        .contextMenu { circleMenu }
         .overlay(alignment: .topLeading) { SwipeBadge(sw: sw, pc: pc, compact: true).padding(4).allowsHitTesting(false) }
         .overlay(alignment: .bottomTrailing) {
             Text(LengthUnits.format(angstroms: cs.windowPx * pc.effectiveAngpix, useAngstroms: units.angstroms) + " wide")
@@ -271,7 +300,7 @@ struct CropView: View {
         func view(_ x: Double, _ y: Double) -> CGPoint { CGPoint(x: (x - t.cx) * k + side / 2, y: (y - t.cy) * k + side / 2) }
         for it in cs.visibleItems {
             let c = view(it.x, it.y), r = cs.px(it.diameterNm) * k / 2
-            let color: Color = it.level == .sure ? .green : .yellow
+            let color: Color = store.scheme.label(it.label).map { swiftUIColor($0.color) } ?? .green
             var path = Path(); path.addEllipse(in: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r))
             let dash: [CGFloat] = it.untouched ? [5, 4] : []
             if it.id == cs.selected {
@@ -295,22 +324,25 @@ struct CropView: View {
         if let h = hover, cs.selected == nil, hoverItem == nil {
             let r = cs.px(cs.penNm > 0 ? cs.penNm : cs.defaultDiameterNm) * k / 2
             var p = Path(); p.addEllipse(in: CGRect(x: h.x - r, y: h.y - r, width: 2 * r, height: 2 * r))
-            ctx.stroke(p, with: .color((cs.level == .sure ? Color.green : Color.yellow).opacity(0.7)), style: StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
+            let pen = store.scheme.label(pc.activeLabel).map { swiftUIColor($0.color) } ?? .green
+            ctx.stroke(p, with: .color(pen.opacity(0.75)), style: StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
         }
     }
 
     private var footer: some View {
-        let c = cs.counts
+        let vis = cs.visibleItems
+        let parts = store.scheme.labels.compactMap { l -> String? in let n = vis.filter { $0.label == l.id }.count; return n > 0 ? "\(n) \(l.name)" : nil }
+        let text = (parts + ["\(cs.counts.removed) removed"]).joined(separator: " · ")
         return VStack(spacing: 6) {
             HStack(spacing: 10) {
-                Text("\(c.sure) sure · \(c.maybe) maybe · \(c.removed) removed").font(.caption).foregroundStyle(.secondary)
+                Text(text).font(.caption).foregroundStyle(.secondary)
                     .lineLimit(1).minimumScaleFactor(0.8)
                 Spacer(minLength: 8)
                 Button { cs.undo() } label: { Label("Undo", systemImage: "arrow.uturn.backward") }.disabled(!cs.canUndo).controlSize(.small).help("Undo (Z)")
                 Button("Skip") { cs.skip() }.disabled(cs.remaining < 2).controlSize(.small)
                 Button { cs.commit() } label: { Text("Next crop  ↵") }.buttonStyle(.borderedProminent)
             }
-            Text("Click to add · drag to move · pinch or ↑ ↓ to resize · double-click to remove · Space: sure / maybe")
+            Text("Click to add · drag to move · pinch or ↑ ↓ to resize · right-click to change type · double-click to remove")
                 .font(.caption2).foregroundStyle(.tertiary).lineLimit(1).minimumScaleFactor(0.7)
         }
     }
@@ -394,7 +426,10 @@ struct CropView: View {
         case .return: if !cs.done { cs.commit() }; return .handled
         case .escape: model.showCrops = false; return .handled
         case .delete, .deleteForward: if let s = cs.selected { cs.remove(s) }; return .handled
-        case .space: if let s = cs.selected { cs.toggleLevel(s); if let it = cs.items.first(where: { $0.id == s }) { cs.level = it.level } } else { cs.level = cs.level == .sure ? .maybe : .sure }; return .handled
+        case .space:
+            if let s = cs.selected { cs.cycleLabel(s) }
+            else if let i = store.scheme.labels.firstIndex(where: { $0.id == pc.activeLabel }) { pc.activeLabel = store.scheme.labels[(i + 1) % store.scheme.labels.count].id }
+            return .handled
         case .upArrow, .downArrow:
             guard let s = cs.selected, let it = cs.items.first(where: { $0.id == s }) else { return .handled }
             cs.beginEdit(); cs.setDiameter(s, nm: it.diameterNm * (p.key == .upArrow ? 1.06 : 1 / 1.06)); return .handled

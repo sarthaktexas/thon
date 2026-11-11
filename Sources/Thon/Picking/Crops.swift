@@ -3,12 +3,15 @@ import Combine
 import CoreGraphics
 
 // Crop editor: the micrograph is cut into overlapping crops, one is shown at a time with its candidate circles.
-// The user moves, resizes, adds and removes circles and sets each one to green (sure) or yellow (maybe); a double click
-// on a circle removes it (= reject). Next confirms the crop: circles left alone count as confirmed, so every circle in
+// The user moves, resizes, adds and removes circles and gives each one a type from the project's label scheme (right-click
+// a circle, a label hotkey, or the type list); the circle is drawn in the colour of its type. A double click on a circle
+// removes it (= reject). Next confirms the crop: circles left alone count as confirmed, so every circle in
 // the crop becomes a labelled example for the assistant (Reranker's logistic model and the Core ML classifier).
 
 final class CropSession: ObservableObject {
+    /// Derived from the type, never set on its own: the labels "maybe" and "uncertain" count as maybe (half weight when learning).
     enum Level: String { case sure, maybe }
+    static func isMaybeLabel(_ id: String) -> Bool { id == "maybe" || id == "uncertain" }
     enum Order: String, CaseIterable, Identifiable { case uncertain = "Uncertain first", scan = "Left to right"; var id: String { rawValue } }
 
     struct Item: Identifiable, Equatable {
@@ -38,7 +41,9 @@ final class CropSession: ObservableObject {
     @Published private(set) var tilesTotal = 0
     @Published private(set) var items: [Item] = []
     @Published var selected: String?
-    @Published var level: Level = .sure { didSet { if level != oldValue, let s = selected { setLevel(s, level) } } }
+    /// View schemes only: resizing a circle also sets its type to the view whose typical size is closest (see `SizeTyper`).
+    @Published var sizeTyping = UserDefaults.standard.bool(forKey: "crop.sizeTyping") { didSet { UserDefaults.standard.set(sizeTyping, forKey: "crop.sizeTyping") } }
+    @Published private(set) var sizeTyper: SizeTyper?
     @Published var penNm: Double = 0                         // size of the next circle you add (0 until the project default is read)
     @Published var zoomOut = false { didSet { if zoomOut != oldValue { revision += 1; addPicksOfWindow() } } }
     @Published var sideDiameters = 5.0 { didSet { if sideDiameters != oldValue { sideDiameters = min(max(sideDiameters, 2), 12); if sideDiameters != oldValue { rebuild() } } } }
@@ -85,6 +90,31 @@ final class CropSession: ObservableObject {
     }
     func px(_ nm: Double) -> Double { nm * 10 / pc.effectiveAngpix }
 
+    // MARK: types and size typing
+
+    /// Labels that name a kind of particle (top, side, …) rather than a confidence or a rejection.
+    var viewLabelIDs: [String] {
+        pc.store.scheme.labels.filter { $0.exported && !Self.isMaybeLabel($0.id) && $0.id != "good" && $0.id != "reject" }.map { $0.id }
+    }
+    var isViewScheme: Bool { viewLabelIDs.count >= 2 }
+    func isRejectLabel(_ id: String) -> Bool { pc.store.scheme.label(id)?.exported == false }
+
+    /// Learns the typical size of each view from the circles you sized by hand (picks with their own diameter) across the project.
+    func refreshSizeTyper() {
+        guard isViewScheme else { sizeTyper = nil; return }
+        let ids = Set(viewLabelIDs)
+        var samples: [(String, Double)] = []
+        for rec in pc.store.project.mics.values {
+            for p in rec.picks where p.status == .accepted && !p.isMaybe && ids.contains(p.label) { if let d = p.diameterNm { samples.append((p.label, d)) } }
+        }
+        sizeTyper = SizeTyper.learn(samples)
+    }
+    /// The view for a circle of this size, or nil when size typing is off, not learned yet, or the circle is not of a view type.
+    private func typeFromSize(_ nm: Double, current: String) -> String? {
+        guard sizeTyping, isViewScheme, viewLabelIDs.contains(current), let t = sizeTyper else { return nil }
+        return t.label(forNm: nm)
+    }
+
     // MARK: tiles
 
     static func centres(length: Double, side: Double) -> [Double] {
@@ -119,6 +149,7 @@ final class CropSession: ObservableObject {
         guard let k = pc.currentKey, pc.imageSize.width > 0 else { queue = []; tilesTotal = 0; items = []; key = nil; return }
         key = k
         rr.use(store: pc.store); classifier.use(project: pc.store.projectURL)
+        refreshSizeTyper()
         let all = allTiles()
         let kept = includeEmpty ? all : all.filter { !picksIn($0, key: k).isEmpty }
         tilesTotal = kept.count
@@ -139,7 +170,7 @@ final class CropSession: ObservableObject {
     }
 
     static func item(from p: Pick) -> Item {
-        Item(id: p.id, x: p.x, y: p.y, diameterNm: p.diameterNm ?? 0, level: p.isMaybe ? .maybe : .sure, label: p.label,
+        Item(id: p.id, x: p.x, y: p.y, diameterNm: p.diameterNm ?? 0, level: (p.isMaybe || isMaybeLabel(p.label)) ? .maybe : .sure, label: p.label,
              isNew: false, untouched: p.status == .candidate, orig: p)
     }
 
@@ -251,7 +282,9 @@ final class CropSession: ObservableObject {
         guard pc.inside(CGPoint(x: x, y: y)) else { return nil }
         beginEdit()
         let (cx, cy) = (min(max(x, 0), pc.imageSize.width - 1), min(max(y, 0), pc.imageSize.height - 1))
-        let it = Item(id: Pick.newID(), x: cx, y: cy, diameterNm: penNm > 0 ? penNm : defaultDiameterNm, level: level, label: pc.activeLabel,
+        let nm = penNm > 0 ? penNm : defaultDiameterNm
+        let label = penNm > 0 ? (typeFromSize(nm, current: pc.activeLabel) ?? pc.activeLabel) : pc.activeLabel
+        let it = Item(id: Pick.newID(), x: cx, y: cy, diameterNm: nm, level: Self.isMaybeLabel(label) ? .maybe : .sure, label: label,
                       isNew: true, untouched: false, removed: false, orig: nil)
         items.append(it); selected = it.id; revision += 1
         return it.id
@@ -265,14 +298,15 @@ final class CropSession: ObservableObject {
         guard let i = items.firstIndex(where: { $0.id == id }) else { return }
         let v = min(max(nm, defaultDiameterNm * 0.2), defaultDiameterNm * 6)
         items[i].diameterNm = v; items[i].untouched = false; penNm = v
+        if let l = typeFromSize(v, current: items[i].label), l != items[i].label {
+            items[i].label = l; items[i].level = Self.isMaybeLabel(l) ? .maybe : .sure
+            if pc.activeLabel != l { pc.activeLabel = l }                  // the next circle you add is of the same kind
+        }
     }
-    func setLevel(_ id: String, _ l: Level) {
-        guard let i = items.firstIndex(where: { $0.id == id }), items[i].level != l || items[i].untouched else { return }
-        beginEdit(); items[i].level = l; items[i].untouched = false
-    }
+    /// The one place a circle's type changes (right-click menu, hotkeys, the type list, Space). The level follows from it.
     func setLabel(_ id: String, _ label: String) {
-        guard let i = items.firstIndex(where: { $0.id == id }), items[i].label != label else { return }
-        beginEdit(); items[i].label = label; items[i].untouched = false
+        guard let i = items.firstIndex(where: { $0.id == id }), items[i].label != label || items[i].untouched else { return }
+        beginEdit(); items[i].label = label; items[i].level = Self.isMaybeLabel(label) ? .maybe : .sure; items[i].untouched = false
     }
     /// Reject: a circle you added disappears; a suggestion is dismissed when the crop is confirmed.
     func remove(_ id: String) {
@@ -282,9 +316,13 @@ final class CropSession: ObservableObject {
         if selected == id { selected = nil }
         revision += 1
     }
-    func toggleLevel(_ id: String) {
-        guard let it = items.first(where: { $0.id == id }) else { return }
-        setLevel(id, it.level == .sure ? .maybe : .sure)
+    /// Space: the next type in the scheme (wraps around).
+    func cycleLabel(_ id: String) {
+        let ls = pc.store.scheme.labels
+        guard !ls.isEmpty, let it = items.first(where: { $0.id == id }) else { return }
+        let i = ls.firstIndex { $0.id == it.label } ?? -1
+        let next = ls[(i + 1) % ls.count].id
+        setLabel(id, next); pc.activeLabel = next
     }
     /// Z: take back the last edit; with none left on this crop, take back the last confirmed crop.
     func undo() {
@@ -349,11 +387,13 @@ final class CropSession: ObservableObject {
         for it in all {
             if it.isNew && it.removed { continue }
             let moved = it.orig.map { hypot($0.x - it.x, $0.y - it.y) > 0.25 * px(pc.store.diameterNm($0)) } ?? false
-            log.decisions.append(SwipeDecision(id: it.id, decision: it.removed ? "reject" : "pick", label: it.removed ? nil : it.label, x: it.x, y: it.y, decoy: false,
+            log.decisions.append(SwipeDecision(id: it.id, decision: (it.removed || isRejectLabel(it.label)) ? "reject" : "pick", label: it.removed ? nil : it.label, x: it.x, y: it.y, decoy: false,
                                                recentered: moved, ms: dwell, t: now, view: sw.display.logTag, mode: "crop"))
             logged += 1
             if it.removed, let o = it.orig {
                 teach(it.id, x: o.x, y: o.y, dNm: pc.store.diameterNm(o), yes: false, weight: nil)
+            } else if isRejectLabel(it.label) {
+                teach(it.id, x: it.x, y: it.y, dNm: it.diameterNm, yes: false, weight: nil)            // typed "reject": kept in the project, a no for the assistant
             } else {
                 teach(it.id, x: it.x, y: it.y, dNm: it.diameterNm, yes: true, weight: it.level == .maybe ? 0.5 : nil)
                 if moved, let o = it.orig { teach("o_" + it.id, x: o.x, y: o.y, dNm: pc.store.diameterNm(o), yes: false, weight: 0.5, picture: false) }
@@ -379,6 +419,7 @@ final class CropSession: ObservableObject {
         reviewed[reviewKey, default: []].insert(t.id)
         queue.removeFirst(); reviewedCount += 1
         zoomOut = false
+        refreshSizeTyper()
         loadItems(); reorder()
     }
 
@@ -396,11 +437,39 @@ final class CropSession: ObservableObject {
         queue.insert(c.tile, at: 0); reviewedCount = max(0, reviewedCount - 1)
         zoomOut = false
         items = c.items; selected = nil; editHistory = []; revision += 1; shownAt = Date()
+        refreshSizeTyper()
     }
 
     /// Moves the crop on screen to the end of the queue without deciding anything.
     func skip() {
         guard queue.count > 1, let t = queue.first else { return }
         queue.removeFirst(); queue.append(t); zoomOut = false; loadItems()
+    }
+}
+
+/// Typical size of each particle view, learned from the circles you sized by hand. A circle's type is then the view whose
+/// typical size (median diameter, compared on a log scale) is closest. Needs at least `minEach` sized circles for each of at
+/// least two views; with fewer it says nothing, so it never guesses from one example.
+struct SizeTyper: Equatable {
+    var centres: [(id: String, nm: Double)]
+    static let minEach = 3
+
+    static func == (a: SizeTyper, b: SizeTyper) -> Bool { a.centres.count == b.centres.count && zip(a.centres, b.centres).allSatisfy { $0.id == $1.id && $0.nm == $1.nm } }
+
+    static func learn(_ samples: [(String, Double)], minEach: Int = SizeTyper.minEach) -> SizeTyper? {
+        var by: [String: [Double]] = [:]
+        for (l, d) in samples where d > 0 { by[l, default: []].append(d) }
+        let cs: [(id: String, nm: Double)] = by.filter { $0.value.count >= minEach }.map { (id: $0.key, nm: median($0.value)) }.sorted { $0.nm < $1.nm }
+        return cs.count >= 2 ? SizeTyper(centres: cs) : nil
+    }
+
+    func label(forNm nm: Double) -> String? {
+        guard nm > 0 else { return nil }
+        return centres.min { abs(log(nm / $0.nm)) < abs(log(nm / $1.nm)) }?.id
+    }
+
+    private static func median(_ v: [Double]) -> Double {
+        let s = v.sorted(), n = s.count
+        return n % 2 == 1 ? s[n / 2] : (s[n / 2 - 1] + s[n / 2]) / 2
     }
 }

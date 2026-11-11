@@ -42,9 +42,9 @@ func testCrops(_ t: inout TestRun) {
     cs.setDiameter("t2", nm: 30)
     cs.remove("t3")
     t.check(cs.items.first { $0.id == "t3" }?.removed == true && !cs.visibleItems.contains { $0.id == "t3" }, "double-click removal hides the circle but keeps it for the commit")
-    cs.level = .maybe
+    c.activeLabel = "maybe"
     let n1 = cs.add(x: 140, y: 140)!
-    t.check(cs.items.first { $0.id == n1 }.map { $0.isNew && $0.level == .maybe && $0.diameterNm == 30 } == true && cs.selected == n1, "a click on empty ground adds a yellow circle of the last size and selects it")
+    t.check(cs.items.first { $0.id == n1 }.map { $0.isNew && $0.label == "maybe" && $0.level == .maybe && $0.diameterNm == 30 } == true && cs.selected == n1, "a click on empty ground adds a circle of the active type (maybe) and the last size, and selects it")
     cs.undo()
     t.check(!cs.items.contains { $0.id == n1 }, "Z takes back the last edit")
     let n2 = cs.add(x: 140, y: 140)!
@@ -53,7 +53,13 @@ func testCrops(_ t: inout TestRun) {
     t.check(!cs.items.contains { $0.id == n2 }, "removing a circle you added just drops it")
     let n3 = cs.add(x: 140, y: 140)!
     cs.setDiameter(n3, nm: 24)
-    cs.setLevel("t2", .maybe); cs.setLevel("t2", .sure)
+    cs.setLabel("t2", "maybe")
+    t.check(cs.items.first { $0.id == "t2" }.map { $0.label == "maybe" && $0.level == .maybe } == true, "changing a circle's type to maybe makes it a maybe (level follows the type)")
+    cs.setLabel("t2", "good")
+    t.check(cs.items.first { $0.id == "t2" }.map { $0.label == "good" && $0.level == .sure } == true, "and back to good makes it sure again")
+    cs.setLabel("t2", "ring_top"); cs.cycleLabel("t2")
+    t.check(cs.items.first { $0.id == "t2" }?.label == "side" && c.activeLabel == "side", "Space steps to the next type in the scheme")
+    cs.setLabel("t2", "good")
     t.check(cs.add(x: -50, y: 10) == nil, "no circle outside the micrograph")
     t.check(["t1", "t2", n3].allSatisfy { id in cs.items.first { $0.id == id }.map { !$0.untouched } == true } && cs.items.first { $0.id == "u1" } == nil, "edited circles are no longer drawn as suggestions")
 
@@ -65,8 +71,8 @@ func testCrops(_ t: inout TestRun) {
     t.check(p2.status == .accepted && p2.diameterNm == 30 && p2.maybe == nil, "resized circle keeps its own size")
     t.check(p3.status == .dismissed, "removed suggestion is dismissed")
     let added = c.store.picks(k).first { $0.id == n3 }
-    t.check(added?.status == .accepted && added?.source == .manual && added?.maybe == true && added?.diameterNm == 24 && c.store.picks(k).count == before + 1, "added circle becomes a manual pick, yellow = maybe, with its size")
-    t.check(c.store.project.params.maybeFlag, "using yellow turns the maybe flag on, so the picks show as ? and can be left out of an export")
+    t.check(added?.status == .accepted && added?.source == .manual && added?.label == "maybe" && added?.maybe == true && added?.diameterNm == 24 && c.store.picks(k).count == before + 1, "added circle becomes a manual pick with its type (maybe) and size")
+    t.check(c.store.project.params.maybeFlag, "using a maybe type turns the maybe flag on, so the picks show as ? and can be left out of an export")
     t.check(c.store.undoName(k)?.hasPrefix("Crop") == true, "a crop is one undoable store edit")
     let log = c.store.record(k).swipe?.decisions ?? []
     t.check(log.allSatisfy { $0.mode == "crop" } && log.contains { $0.id == "t3" && $0.decision == "reject" } && log.contains { $0.id == "t1" && $0.decision == "pick" && $0.recentered }, "decisions are logged with mode crop (reject, pick, moved)")
@@ -94,6 +100,32 @@ func testCrops(_ t: inout TestRun) {
     cs.zoomOut = true
     t.check(cs.items.contains { $0.id == "far" } && cs.windowPx == 2 * cs.sidePx, "zoom out ×2 adds the circles of the wider window")
     cs.zoomOut = false
+
+    // --- size typing (view schemes)
+    t.section("crop editor: type from size")
+    let st = SizeTyper.learn([("ring_top", 26), ("ring_top", 28), ("ring_top", 27), ("side", 17), ("side", 19), ("side", 18), ("tilted", 22)])
+    t.check(st?.centres.map { $0.id } == ["side", "ring_top"], "learns a typical size per view, only for views with 3 or more sized circles", "\(String(describing: st?.centres))")
+    t.check(st?.label(forNm: 25) == "ring_top" && st?.label(forNm: 19) == "side" && st?.label(forNm: 14) == "side", "a circle takes the view with the closest typical size")
+    t.check(SizeTyper.learn([("ring_top", 26), ("ring_top", 27), ("ring_top", 28), ("side", 18)]) == nil, "one view alone, or too few examples, learns nothing")
+    c.store.setScheme_forTest(LabelScheme.views); c.activeLabel = "ring_top"
+    t.check(cs.isViewScheme && cs.viewLabelIDs == ["ring_top", "side", "tilted", "oligomer"], "the views preset is a view scheme (confidence and reject types are not views)", "\(cs.viewLabelIDs)")
+    let savedTyping = cs.sizeTyping                                   // the test must not change the user's saved preference
+    cs.sizeTyping = true; cs.refreshSizeTyper()
+    let w0 = cs.add(x: 120, y: 120)!
+    cs.setDiameter(w0, nm: 30)
+    t.check(cs.items.first { $0.id == w0 }?.label == "ring_top", "with nothing learned, resizing leaves the type alone")
+    for (i, d) in [26.0, 27, 28, 17, 18, 19].enumerated() {
+        _ = c.store.perform(k, "sized\(i)") { l in l.append(Pick(id: "sz\(i)", x: 300 + Double(i) * 10, y: 300, label: i < 3 ? "ring_top" : "side", source: .manual, status: .accepted, diameterNm: d)) }
+    }
+    cs.refreshSizeTyper()
+    t.check(cs.sizeTyper != nil, "the sized picks of the project teach it")
+    cs.setDiameter(w0, nm: 18)
+    t.check(cs.items.first { $0.id == w0 }?.label == "side" && c.activeLabel == "side", "resizing a circle to a side-view size makes it a side view")
+    cs.setLabel(w0, "uncertain"); cs.setDiameter(w0, nm: 27)
+    t.check(cs.items.first { $0.id == w0 }?.label == "uncertain", "a type you set that is not a view (uncertain, reject) is never overwritten by size")
+    cs.sizeTyping = false; cs.setLabel(w0, "ring_top"); cs.setDiameter(w0, nm: 18)
+    t.check(cs.items.first { $0.id == w0 }?.label == "ring_top", "switched off, size never changes the type")
+    cs.sizeTyping = savedTyping
 
     // --- assistant: early estimate and balanced accuracy
     t.section("assistant: early estimate")
