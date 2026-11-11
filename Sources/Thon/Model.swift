@@ -6,6 +6,7 @@ import ImageIO
 struct ExposureItem: Identifiable, Hashable {
     let url: URL
     let rel: String
+    var session: String? = nil          // session id in a .thon project
     var id: URL { url }
 }
 
@@ -63,7 +64,20 @@ final class AppModel: ObservableObject {
     static let shared = AppModel()
 
     @Published var items: [ExposureItem] = []
-    @Published var selection: URL? { didSet { if selection != oldValue { frame = 0; loadSelection() } } }
+    @Published var selection: URL? {
+        didSet {
+            guard selection != oldValue else { return }
+            // The sidebar List (NSTableView) writes `selection` from inside its delegate callback. Doing the
+            // follow-up work (frame reset, load, picker/cursor updates) synchronously publishes more changes
+            // there and triggers AppKit's "reentrant operation in its NSTableView delegate" warning, so defer it.
+            let sel = selection
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.selection == sel else { return }
+                self.frame = 0
+                self.loadSelection()
+            }
+        }
+    }
     @Published var thumbs: [URL: NSImage] = [:]
     @Published var metas: [URL: ExposureMeta] = [:]
     @Published var sortKey: SortKey = .name { didSet { resort() } }
@@ -75,15 +89,25 @@ final class AppModel: ObservableObject {
     @Published var frame = 0
     @Published var showInspector = true
     @Published var fftNormalize = true
+    @Published var ctfParams = CTFParams()
+    @Published var ctf: CTFFit?
+    @Published var ctfContours: [[(k: Double, theta: Double)]] = []
+    @Published var ctfBusy = false
+    @Published var ctfMessage: String?
+    @Published var showCTFZeros = true
     @Published var fftTile = 512 { didSet { if fftTile != oldValue { recomputeFFT() } } }
     @Published var tagQuery = ""
     @Published var inspectorTab: InspectorTab = .overview
     @Published var showGallery = false
     @Published var showSwipe = false
+    @Published var showSessions = false
+    @Published var collapsedSessions: Set<String> = []
 
     let view = ViewState()
     let cursor = CursorState()
     let picks = PickController()
+    let recents = RecentStore()
+    let measure = MeasureState()
     private var picksBag = Set<AnyCancellable>()
 
     init() {
@@ -92,6 +116,9 @@ final class AppModel: ObservableObject {
         picks.$enabled.sink { [weak self] on in
             if on { self?.inspectorTab = .picks; self?.showInspector = true }
         }.store(in: &picksBag)
+        // The picker and the ruler both own the left mouse button, so only one can be active.
+        picks.$enabled.sink { [weak self] on in if on { self?.measure.enabled = false } }.store(in: &picksBag)
+        measure.$enabled.sink { [weak self] on in if on { self?.picks.enabled = false } }.store(in: &picksBag)
     }
     var renderer: MicrographRenderer?
 
@@ -120,7 +147,7 @@ final class AppModel: ObservableObject {
         let box = max(picks.boxPx, 8)
         let z = min(max(Double(min(view.viewPixels.width, view.viewPixels.height)) / (5 * box), 0.05), 32)
         let focus = CGPoint(x: x + 0.5, y: y + 0.5)
-        guard let target = items.first(where: { picks.store.key(for: $0.url) == key })?.url else { loadError = "Micrograph \(key) is not in the open folder."; return }
+        guard let target = items.first(where: { picks.store.key(for: $0.url) == key })?.url else { loadError = "Micrograph \(key) is not in the open folder / project."; return }
         if target == selection { view.center = focus; view.zoom = z }
         else { view.pendingFocus = (focus, z); selection = target }
     }
@@ -133,6 +160,7 @@ final class AppModel: ObservableObject {
     var sortedItems: [ExposureItem] { items }
 
     func open(urls: [URL]) {
+        if let proj = urls.first(where: { $0.pathExtension.lowercased() == PickStore.projectExtension }) { openProjectFile(proj); return }
         var found: [ExposureItem] = []
         let fm = FileManager.default
         for u in urls {
@@ -150,6 +178,8 @@ final class AppModel: ObservableObject {
             }
         }
         guard !found.isEmpty else { loadError = "No .dm3 / .dm4 / .mrc files found."; return }
+        // one folder or file is remembered as itself; several files as their folder
+        if urls.count == 1 { recents.note(urls[0]) } else if let first = found.first { recents.note(first.url.deletingLastPathComponent()) }
         indexQueue.cancelAllOperations()
         // the project (picks_project.json, labels.json, backups/) lives in the opened folder,
         // or next to the first file when individual files were opened
@@ -158,10 +188,194 @@ final class AppModel: ObservableObject {
         } else if let first = found.first {
             picks.store.openProject(folder: first.url.deletingLastPathComponent())
         }
-        thumbs = [:]; metas = [:]
+        thumbs = [:]; metas = [:]; pendingIndex = [:]
         items = found.sorted { $0.rel.localizedStandardCompare($1.rel) == .orderedAscending }
         selection = items.first?.url
         index(items)
+    }
+
+    // MARK: .thon projects (sessions)
+
+    var isProject: Bool { picks.store.isProjectFile }
+
+    /// Opens a `.thon` project: picks, label scheme and session organization come from the file; micrographs from the session folders.
+    func openProjectFile(_ url: URL) {
+        let store = picks.store
+        let ok = store.openProject(file: url)
+        if !ok { loadError = store.lastError; store.lastError = nil; return }
+        recents.note(url)
+        rescanSessions(keepSelection: false)
+    }
+
+    /// Re-reads the session folders (after opening, adding, removing or relocating a session).
+    func rescanSessions(keepSelection: Bool = true) {
+        let store = picks.store
+        let fm = FileManager.default
+        var found: [ExposureItem] = []
+        var missing: [String] = []
+        for s in store.project.sessions {
+            guard let folder = store.sessionFolder(s.id), PathUtil.isDirectory(folder) else { missing.append(s.name); continue }
+            guard let en = fm.enumerator(at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
+            for case let f as URL in en where Self.allowedExtensions.contains(f.pathExtension.lowercased()) {
+                guard store.keyMap.sessionID(containing: f) == s.id else { continue }          // belongs to a nested session
+                let rel = String(f.standardizedFileURL.path.dropFirst(folder.standardizedFileURL.path.count + 1))
+                found.append(ExposureItem(url: f, rel: s.name + "/" + rel, session: store.effectiveSessionID(store.key(for: f)) ?? s.id))
+            }
+        }
+        indexQueue.cancelAllOperations()
+        thumbs = [:]; metas = [:]; pendingIndex = [:]
+        let sel = keepSelection ? selection : nil
+        items = found
+        resort()
+        selection = (sel.flatMap { u in items.contains { $0.url == u } ? u : nil }) ?? items.first?.url
+        index(items)
+        if !missing.isEmpty { loadError = "Session folder not found: \(missing.joined(separator: ", ")). Use Sessions… to locate it." }
+        else if items.isEmpty && !store.project.sessions.isEmpty { loadError = "No .dm3 / .dm4 / .mrc files found in the session folders." }
+    }
+
+    func sessionItems(_ id: String) -> [ExposureItem] { items.filter { $0.session == id } }
+
+    func presentOpenProjectPanel() {
+        let p = NSOpenPanel()
+        p.canChooseFiles = true; p.canChooseDirectories = false; p.allowsMultipleSelection = false
+        p.allowedContentTypes = [UTType(filenameExtension: PickStore.projectExtension)].compactMap { $0 }
+        p.message = "Choose a Thon project (.thon)."
+        if p.runModal() == .OK, let u = p.url { openProjectFile(u) }
+    }
+
+    /// Pick the session folders, then choose where to save the project file.
+    func presentNewProjectPanels() {
+        let p = NSOpenPanel()
+        p.canChooseFiles = false; p.canChooseDirectories = true; p.allowsMultipleSelection = true
+        p.prompt = "Use as sessions"
+        p.message = "Choose one folder per session (grid / sample). Each becomes a session; you can rename and annotate them next."
+        guard p.runModal() == .OK, !p.urls.isEmpty else { return }
+        let folders = p.urls.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+        let sp = NSSavePanel()
+        sp.allowedContentTypes = [UTType(filenameExtension: PickStore.projectExtension)].compactMap { $0 }
+        sp.nameFieldStringValue = "project.\(PickStore.projectExtension)"
+        sp.directoryURL = folders[0].deletingLastPathComponent()
+        sp.message = "Save the project file. Picks and the session organization are stored in it."
+        guard sp.runModal() == .OK, var u = sp.url else { return }
+        if u.pathExtension.lowercased() != PickStore.projectExtension { u.appendPathExtension(PickStore.projectExtension) }
+        let store = picks.store
+        if !store.createProject(file: u, folders: folders) { loadError = store.lastError ?? "Could not save the project."; return }
+        recents.note(u)
+        rescanSessions(keepSelection: false)
+        showSessions = true
+    }
+
+    func presentAddSessionPanel() {
+        guard isProject else { presentNewProjectPanels(); return }
+        let p = NSOpenPanel()
+        p.canChooseFiles = false; p.canChooseDirectories = true; p.allowsMultipleSelection = true
+        p.prompt = "Add session"
+        for u in p.runModal() == .OK ? p.urls : [] {
+            if picks.store.addSession(folder: u) == nil { loadError = picks.store.lastError; picks.store.lastError = nil }
+        }
+        rescanSessions()
+    }
+
+    func presentRelocateSessionPanel(_ id: String) {
+        let p = NSOpenPanel()
+        p.canChooseFiles = false; p.canChooseDirectories = true; p.allowsMultipleSelection = false
+        p.prompt = "Use this folder"; p.message = "Choose the folder that now holds this session's micrographs (existing picks stay attached)."
+        guard p.runModal() == .OK, let u = p.url else { return }
+        picks.store.relocateSession(id: id, folder: u)
+        rescanSessions()
+    }
+
+    /// Moves micrographs to another session (nil = back to the session whose folder holds them). Files stay where they are; picks stay attached.
+    func moveMicrographs(_ urls: [URL], to id: String?) {
+        let store = picks.store
+        guard store.moveMicrographs(urls.map { store.key(for: $0) }, to: id) > 0 else { return }
+        refreshItemSessions()
+    }
+
+    func refreshItemSessions() {
+        let store = picks.store
+        items = items.map { var i = $0; i.session = store.effectiveSessionID(store.key(for: $0.url)) ?? $0.session; return i }
+        resort()
+    }
+
+    /// "Folder of folders": every sub-folder of the chosen parent that holds micrographs becomes a session.
+    func presentNewProjectFromParentPanel() {
+        let p = NSOpenPanel()
+        p.canChooseFiles = false; p.canChooseDirectories = true; p.allowsMultipleSelection = false
+        p.prompt = "Use sub-folders as sessions"
+        p.message = "Choose a folder whose sub-folders are the sessions (one per grid / sample)."
+        guard p.runModal() == .OK, let parent = p.url else { return }
+        let found = SessionDiscovery.subfolderSessions(of: parent)
+        guard !found.folders.isEmpty else { loadError = "No sub-folders with .dm3 / .dm4 / .mrc files in \(parent.lastPathComponent)."; return }
+        let sp = NSSavePanel()
+        sp.allowedContentTypes = [UTType(filenameExtension: PickStore.projectExtension)].compactMap { $0 }
+        sp.nameFieldStringValue = "\(parent.lastPathComponent).\(PickStore.projectExtension)"
+        sp.directoryURL = parent
+        sp.message = "Save the project file (\(found.folders.count) sessions)."
+        guard sp.runModal() == .OK, var u = sp.url else { return }
+        if u.pathExtension.lowercased() != PickStore.projectExtension { u.appendPathExtension(PickStore.projectExtension) }
+        let store = picks.store
+        if !store.createProject(file: u, name: parent.lastPathComponent, folders: found.folders) { loadError = store.lastError ?? "Could not save the project."; return }
+        rescanSessions(keepSelection: false)
+        showSessions = true
+        if found.looseFiles > 0 { loadError = "\(found.looseFiles) micrographs lie directly in \(parent.lastPathComponent), not in a sub-folder, so they were not added." }
+    }
+
+    /// Adds every sub-folder of the chosen parent (that holds micrographs and is not yet a session) to the open project.
+    func presentAddSubfolderSessionsPanel() {
+        guard isProject else { presentNewProjectFromParentPanel(); return }
+        let p = NSOpenPanel()
+        p.canChooseFiles = false; p.canChooseDirectories = true; p.allowsMultipleSelection = false
+        p.prompt = "Add sub-folders as sessions"
+        p.message = "Choose a folder whose sub-folders should be added as sessions."
+        guard p.runModal() == .OK, let parent = p.url else { return }
+        let found = SessionDiscovery.subfolderSessions(of: parent)
+        var added = 0, skipped = 0
+        for f in found.folders { if picks.store.addSession(folder: f) != nil { added += 1 } else { skipped += 1 } }
+        picks.store.lastError = nil
+        rescanSessions()
+        if found.folders.isEmpty { loadError = "No sub-folders with .dm3 / .dm4 / .mrc files in \(parent.lastPathComponent)." }
+        else if skipped > 0 { loadError = "Added \(added) sessions; \(skipped) sub-folders were skipped because they are already sessions or overlap one." }
+    }
+
+    func removeSession(_ id: String) {
+        picks.store.removeSession(id: id)
+        rescanSessions()
+    }
+
+    private func sessionRank(_ i: ExposureItem) -> Int {
+        i.session.flatMap { id in picks.store.project.sessions.firstIndex { $0.id == id } } ?? 0
+    }
+    /// Sessions keep their project order; within a session the chosen sort applies.
+    private func itemLess(_ a: ExposureItem, _ b: ExposureItem) -> Bool {
+        let ra = sessionRank(a), rb = sessionRank(b)
+        if ra != rb { return ra < rb }
+        switch sortKey {
+        case .name: return a.rel.localizedStandardCompare(b.rel) == .orderedAscending
+        case .time: return (metas[a.url]?.acquired ?? .distantPast) < (metas[b.url]?.acquired ?? .distantPast)
+        case .mag: return (metas[a.url]?.indicatedMag ?? 0) < (metas[b.url]?.indicatedMag ?? 0)
+        }
+    }
+
+    // Index results arrive one file at a time from the background queue. Publishing each one separately
+    // makes the sidebar List reload per file (and re-sort per file), so collect them and publish in batches.
+    private var pendingIndex: [URL: (ExposureMeta, NSImage?)] = [:]
+    private var indexFlushScheduled = false
+
+    private func scheduleIndexFlush() {
+        guard !indexFlushScheduled else { return }
+        indexFlushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.flushIndex() }
+    }
+
+    private func flushIndex() {
+        indexFlushScheduled = false
+        guard !pendingIndex.isEmpty else { return }
+        let batch = pendingIndex; pendingIndex = [:]
+        var m = metas, t = thumbs
+        for (url, r) in batch { m[url] = r.0; if let ns = r.1 { t[url] = ns } }
+        metas = m; thumbs = t
+        if sortKey != .name { resort() }
     }
 
     private func index(_ list: [ExposureItem]) {
@@ -182,9 +396,8 @@ final class AppModel: ObservableObject {
                 let ns = thumb.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    self.metas[item.url] = meta
-                    if let ns { self.thumbs[item.url] = ns }
-                    if self.sortKey != .name { self.resort() }
+                    self.pendingIndex[item.url] = (meta, ns)
+                    self.scheduleIndexFlush()
                 }
             }
         }
@@ -192,11 +405,7 @@ final class AppModel: ObservableObject {
 
     private func resort() {
         let sel = selection
-        switch sortKey {
-        case .name: items.sort { $0.rel.localizedStandardCompare($1.rel) == .orderedAscending }
-        case .time: items.sort { (metas[$0.url]?.acquired ?? .distantPast) < (metas[$1.url]?.acquired ?? .distantPast) }
-        case .mag: items.sort { (metas[$0.url]?.indicatedMag ?? 0) < (metas[$1.url]?.indicatedMag ?? 0) }
-        }
+        items.sort(by: itemLess)
         if selection != sel { selection = sel }
     }
 
@@ -224,12 +433,14 @@ final class AppModel: ObservableObject {
                 view.applyAuto()
                 cursor.pixels = loaded.pixels; cursor.width = loaded.entry.width; cursor.height = loaded.entry.height
                 picks.pixels = loaded.pixels; picks.currentURL = url
+                measure.setImage(key: url.path)
                 picks.setMicrograph(key: picks.store.key(for: url), width: loaded.entry.width, height: loaded.entry.height, pixelSizeA: loaded.entry.pixelSizeA)
                 generation += 1
                 isLoading = false
+                if let kv = loaded.file?.quickMeta().voltageKV { ctfParams.voltageKV = kv }
                 let px = loaded.pixels, w = loaded.entry.width, h = loaded.entry.height, tileSize = fftTile
                 let ps = await Task.detached(priority: .utility) { computePowerSpectrum(pixels: px, width: w, height: h, tile: tileSize) }.value
-                if token == loadToken { fft = ps }
+                if token == loadToken { fft = ps; runCTFFit() }
             } catch {
                 guard token == loadToken else { return }
                 isLoading = false
@@ -244,10 +455,29 @@ final class AppModel: ObservableObject {
     func recomputeFFT() {
         guard let d = doc else { return }
         let token = loadToken, px = d.pixels, w = d.entry.width, h = d.entry.height, tileSize = fftTile
-        fft = nil
+        fft = nil; ctf = nil; ctfContours = []
         Task {
             let ps = await Task.detached(priority: .utility) { computePowerSpectrum(pixels: px, width: w, height: h, tile: tileSize) }.value
-            if token == loadToken, tileSize == fftTile { fft = ps }
+            if token == loadToken, tileSize == fftTile { fft = ps; runCTFFit() }
+        }
+    }
+
+    /// Fit defocus / astigmatism to the current spectrum (diagnostic only; the image is never CTF-corrected).
+    func runCTFFit() {
+        guard let ps = fft, let pa = doc?.entry.pixelSizeA else {
+            ctf = nil; ctfContours = []
+            ctfMessage = doc != nil && fft != nil ? "No pixel size in this file, so the CTF cannot be fitted." : nil
+            return
+        }
+        let token = loadToken, params = ctfParams
+        ctfBusy = true; ctfMessage = nil
+        Task {
+            let fit = await Task.detached(priority: .utility) { fitCTF(ps: ps, pixelSizeA: pa, params: params) }.value
+            guard token == loadToken else { return }
+            ctfBusy = false
+            ctf = fit
+            ctfContours = fit.map { ctfZeroContours($0) } ?? []
+            if fit == nil { ctfMessage = "CTF fit failed (fit range too narrow for this pixel size?)." }
         }
     }
 
@@ -269,8 +499,10 @@ final class AppModel: ObservableObject {
         }
         let chars = e.charactersIgnoringModifiers ?? ""
         let mods = e.modifierFlags
+        if !mods.contains(.command), measure.handleKey(keyCode: e.keyCode) { return true }
         if picks.handleKey(chars: chars, keyCode: e.keyCode, shift: mods.contains(.shift), command: mods.contains(.command)) { return true }
         switch chars.lowercased() {
+        case "m": measure.enabled.toggle(); return true
         case "p": picks.enabled.toggle(); return true
         case "g": showGallery = true; return true
         case "s": if doc != nil { picks.enabled = true; showSwipe = true }; return true

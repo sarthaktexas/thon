@@ -34,6 +34,18 @@ struct ThonApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("Open Files…") { model.presentOpenPanel(folders: false) }.keyboardShortcut("o")
                 Button("Open Folder…") { model.presentOpenPanel(folders: true) }.keyboardShortcut("o", modifiers: [.command, .shift])
+                Menu("Open Recent") {
+                    ForEach(model.recents.existing, id: \.path) { u in Button(u.lastPathComponent) { model.open(urls: [u]) } }
+                    Divider()
+                    Button("Clear Menu") { model.recents.clear() }.disabled(model.recents.paths.isEmpty)
+                }
+                Divider()
+                Button("Open Project…") { model.presentOpenProjectPanel() }.keyboardShortcut("o", modifiers: [.command, .option])
+                Button("New Project from Folders…") { model.presentNewProjectPanels() }.keyboardShortcut("n", modifiers: [.command, .option])
+                Button("New Project from Folder of Folders…") { model.presentNewProjectFromParentPanel() }.keyboardShortcut("n", modifiers: [.command, .option, .shift])
+                Button("Sessions…") { model.showSessions = true }.disabled(!model.isProject)
+                Button("Add Session Folder…") { model.presentAddSessionPanel() }.disabled(!model.isProject)
+                Button("Add Sub-folders as Sessions…") { model.presentAddSubfolderSessionsPanel() }.disabled(!model.isProject)
                 Divider()
                 Button("Export PNG…") { model.exportPNG() }.keyboardShortcut("e")
                 Button("Export MRC (raw)…") { model.exportMRC(processed: false) }.keyboardShortcut("e", modifiers: [.command, .shift])
@@ -58,6 +70,9 @@ struct ThonApp: App {
                 Divider()
                 Button("Save Picks Now") { model.picks.store.save(forceBackup: true) }.keyboardShortcut("s")
             }
+            CommandMenu("Measure") {
+                MeasureMenuItems(measure: model.measure)
+            }
             CommandMenu("Navigate") {
                 Button("Next Exposure") { model.step(1) }.keyboardShortcut("]")
                 Button("Previous Exposure") { model.step(-1) }.keyboardShortcut("[")
@@ -68,6 +83,9 @@ struct ThonApp: App {
                 Button("Zoom In") { model.view.setZoom(model.view.zoom * 1.25) }.keyboardShortcut("+")
                 Button("Zoom Out") { model.view.setZoom(model.view.zoom / 1.25) }.keyboardShortcut("-")
                 Button("Invert Contrast") { model.view.invert.toggle() }.keyboardShortcut("i")
+                Divider()
+                UnitMenuToggle()
+                Divider()
                 Button("Toggle Inspector") { model.showInspector.toggle() }.keyboardShortcut("i", modifiers: [.command, .option])
             }
         }

@@ -6,7 +6,32 @@ import Charts
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
 
+    /// Welcome screen until something is open (a project with no micrographs still gets the normal window).
+    private var showWelcome: Bool { model.items.isEmpty && !model.isProject }
+
     var body: some View {
+        Group {
+            if showWelcome { WelcomeView(recents: model.recents) } else { mainWindow }
+        }
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            var urls: [URL] = []
+            let group = DispatchGroup()
+            for p in providers {
+                group.enter()
+                _ = p.loadObject(ofClass: URL.self) { u, _ in if let u { urls.append(u) }; group.leave() }
+            }
+            group.notify(queue: .main) { model.open(urls: urls) }
+            return true
+        }
+        .sheet(isPresented: $model.showGallery) { GalleryView(model: model) }
+        .sheet(isPresented: $model.showSwipe) { SwipeView(model: model) }
+        .sheet(isPresented: $model.showSessions) { SessionsView(model: model, store: model.picks.store) }
+        .alert("Thon", isPresented: Binding(get: { model.loadError != nil }, set: { if !$0 { model.loadError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(model.loadError ?? "") }
+    }
+
+    private var mainWindow: some View {
         NavigationSplitView {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 230, ideal: 270, max: 380)
@@ -21,6 +46,7 @@ struct ContentView: View {
             ToolbarItemGroup(placement: .navigation) {
                 Button { model.presentOpenPanel(folders: false) } label: { Label("Open files", systemImage: "doc") }
                 Button { model.presentOpenPanel(folders: true) } label: { Label("Open folder", systemImage: "folder") }
+                Button { model.presentOpenProjectPanel() } label: { Label("Open project", systemImage: "square.stack.3d.up") }.help("Open a .thon project (⌥⌘O)")
             }
             ToolbarItemGroup(placement: .principal) {
                 Button { model.step(-1) } label: { Image(systemName: "chevron.left") }
@@ -32,6 +58,7 @@ struct ContentView: View {
             }
             ToolbarItemGroup {
                 PickToggle(pc: model.picks)
+                MeasureToggle(measure: model.measure)
                 Button { model.view.fit() } label: { Label("Fit", systemImage: "arrow.up.left.and.down.right.magnifyingglass") }
                 Button { model.view.setZoom(1) } label: { Label("100%", systemImage: "1.magnifyingglass") }
                 InvertToggle(vs: model.view)
@@ -44,21 +71,6 @@ struct ContentView: View {
                 Button { model.showInspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.right") }
             }
         }
-        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-            var urls: [URL] = []
-            let group = DispatchGroup()
-            for p in providers {
-                group.enter()
-                _ = p.loadObject(ofClass: URL.self) { u, _ in if let u { urls.append(u) }; group.leave() }
-            }
-            group.notify(queue: .main) { model.open(urls: urls) }
-            return true
-        }
-        .sheet(isPresented: $model.showGallery) { GalleryView(model: model) }
-        .sheet(isPresented: $model.showSwipe) { SwipeView(model: model) }
-        .alert("Thon", isPresented: Binding(get: { model.loadError != nil }, set: { if !$0 { model.loadError = nil } })) {
-            Button("OK", role: .cancel) {}
-        } message: { Text(model.loadError ?? "") }
     }
 }
 
@@ -75,24 +87,39 @@ struct SidebarView: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        List(selection: $model.selection) {
-            ForEach(model.sortedItems) { item in
-                ExposureRow(item: item, thumb: model.thumbs[item.url], meta: model.metas[item.url])
-                    .tag(item.url)
+        Group {
+            if model.isProject { ProjectList(store: model.picks.store) }
+            else {
+                List(selection: $model.selection) {
+                    ForEach(model.sortedItems) { item in
+                        ExposureRow(item: item, thumb: model.thumbs[item.url], meta: model.metas[item.url])
+                            .tag(item.url)
+                    }
+                }
+                .listStyle(.sidebar)
             }
         }
-        .listStyle(.sidebar)
         .safeAreaInset(edge: .top) {
-            HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                if model.isProject {
+                    HStack {
+                        Text(model.picks.store.projectTitle).font(.headline).lineLimit(1).truncationMode(.tail)
+                        Spacer()
+                        Button("Sessions…") { model.showSessions = true }.controlSize(.small)
+                    }
+                    Text("\(model.picks.store.project.sessions.count) sessions · \(model.items.count) exposures").font(.callout).foregroundStyle(.secondary)
+                        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                } else {
                 Text("\(model.items.count) exposures").font(.callout).foregroundStyle(.secondary)
-                Spacer()
+                    .lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                }
                 Picker("Sort by", selection: $model.sortKey) {
                     ForEach(SortKey.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.menu)
-                .controlSize(.large)
-                .frame(width: 210)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10).padding(.vertical, 6)
             .background(.bar)
         }
@@ -100,11 +127,72 @@ struct SidebarView: View {
             if model.items.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "square.stack.3d.up").font(.largeTitle).foregroundStyle(.secondary)
-                    Text("Open or drop .dm3 / .dm4 files or a folder").font(.callout).foregroundStyle(.secondary)
+                    Text("No micrographs found. Use Sessions… to add or locate session folders.").font(.callout).foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
-                    Button("Open Folder…") { model.presentOpenPanel(folders: true) }
+                    Button("Sessions…") { model.showSessions = true }
                 }.padding()
             }
+        }
+    }
+}
+
+/// Sidebar of a .thon project: one collapsible section per session, in project order.
+struct ProjectList: View {
+    @EnvironmentObject var model: AppModel
+    @ObservedObject var store: PickStore
+
+    var body: some View {
+        List(selection: $model.selection) {
+            ForEach(store.project.sessions) { s in
+                Section(isExpanded: Binding(get: { !model.collapsedSessions.contains(s.id) },
+                                            set: { if $0 { model.collapsedSessions.remove(s.id) } else { model.collapsedSessions.insert(s.id) } })) {
+                    ForEach(model.sessionItems(s.id)) { item in
+                        ExposureRow(item: item, thumb: model.thumbs[item.url], meta: model.metas[item.url]).tag(item.url)
+                            .contextMenu {
+                                Menu("Move to Session") {
+                                    ForEach(store.project.sessions.filter { $0.id != item.session }) { t in
+                                        Button(t.name) { model.moveMicrographs([item.url], to: t.id) }
+                                    }
+                                }
+                                if store.originSessionID(store.key(for: item.url)) != item.session {
+                                    Button("Back to Its Own Session") { model.moveMicrographs([item.url], to: nil) }
+                                }
+                            }
+                    }
+                } header: {
+                    SessionHeader(model: model, store: store, session: s)
+                }
+            }
+        }
+        .listStyle(.sidebar)
+    }
+}
+
+struct SessionHeader: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var store: PickStore
+    let session: PickSession
+
+    var body: some View {
+        let st = store.sessionStats(session.id)
+        let n = model.sessionItems(session.id).count
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 4) {
+                if !store.sessionFolderExists(session.id) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow).help("Folder not found – use Sessions… to locate it")
+                }
+                Text(session.name).font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.tail)
+            }
+            let meta = [session.sample, session.date].filter { !$0.isEmpty }.joined(separator: " · ")
+            if !meta.isEmpty { Text(meta).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+            Text("\(n) mics · \(st.picks) picks" + (st.candidates > 0 ? " · \(st.candidates) candidates" : "") + (st.done > 0 ? " · \(st.done) done" : ""))
+                .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+        }
+        .textCase(nil)
+        .contextMenu {
+            Button("Edit Session…") { model.showSessions = true }
+            Button("Locate Folder…") { model.presentRelocateSessionPanel(session.id) }
+            if let f = store.sessionFolder(session.id) { Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([f]) } }
         }
     }
 }
@@ -153,6 +241,7 @@ struct ImagePane: View {
         ZStack {
             MicrographView(model: model)
             PickOverlay(pc: model.picks, vs: model.view, store: model.picks.store)
+            MeasureOverlay(measure: model.measure, vs: model.view, pixelSizeA: model.doc?.entry.pixelSizeA)
             if model.doc == nil && !model.isLoading {
                 Text("No image loaded").foregroundStyle(.secondary)
             }
@@ -183,6 +272,7 @@ struct HeaderOverlay: View {
 
 struct ScaleBar: View {
     @ObservedObject var vs: ViewState
+    @ObservedObject var units = UnitSettings.shared
     let pixelSizeA: Double?
 
     var body: some View {
@@ -203,11 +293,7 @@ struct ScaleBar: View {
         let mag = pow(10, floor(log10(targetA)))
         var best = mag
         for m in [1.0, 2.0, 5.0, 10.0] where m * mag <= targetA { best = m * mag }
-        let label: String
-        if best >= 1e4 { label = String(format: "%g µm", best / 1e4) }
-        else if best >= 10 { label = String(format: "%g nm", best / 10) }
-        else { label = String(format: "%g Å", best) }
-        return (best, label)
+        return (best, LengthUnits.scaleBarLabel(angstroms: best, useAngstroms: units.angstroms))
     }
 }
 
@@ -215,12 +301,16 @@ struct Readout: View {
     @ObservedObject var cursor: CursorState
     @ObservedObject var vs: ViewState
     @ObservedObject var model: AppModel
+    @ObservedObject var units = UnitSettings.shared
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 1) {
             if let x = cursor.x, let y = cursor.y {
                 let pa = model.doc?.entry.pixelSizeA
-                Text("x \(x)  y \(y)" + (pa.map { String(format: "   (%.1f, %.1f nm)", Double(x) * $0 / 10, Double(y) * $0 / 10) } ?? ""))
+                Text("x \(x)  y \(y)" + (pa.map { p in
+                    units.angstroms ? String(format: "   (%.0f, %.0f Å)", Double(x) * p, Double(y) * p)
+                                    : String(format: "   (%.1f, %.1f nm)", Double(x) * p / 10, Double(y) * p / 10)
+                } ?? ""))
                 if let v = cursor.value { Text("value \(String(format: "%.6g", v))") }
             }
             Text(String(format: "zoom %.0f%%", vs.zoom * 100))
@@ -271,6 +361,7 @@ struct Card<Content: View>: View {
 
 struct OverviewTab: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var units = UnitSettings.shared
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
@@ -282,7 +373,7 @@ struct OverviewTab: View {
                                 ForEach(sec.rows) { r in
                                     GridRow {
                                         Text(r.label).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-                                        Text(r.value).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                                        Text(r.text(angstroms: units.angstroms)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                                     }
                                 }
                             }.font(.callout)
@@ -408,10 +499,25 @@ struct FFTTab: View {
                                         }
                                     }.allowsHitTesting(false)
                                 }
+                                if let pa, model.showCTFZeros, !model.ctfContours.isEmpty {
+                                    Canvas { ctx, size in
+                                        let c = CGPoint(x: size.width / 2, y: size.height / 2)
+                                        for line in model.ctfContours {
+                                            var path = Path()
+                                            for (i, p) in line.enumerated() {
+                                                let r = p.k * pa * Double(s)
+                                                let pt = CGPoint(x: c.x + r * cos(p.theta), y: c.y + r * sin(p.theta))
+                                                if i == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
+                                            }
+                                            ctx.stroke(path, with: .color(.cyan.opacity(0.8)), style: StrokeStyle(lineWidth: 0.8))
+                                        }
+                                    }.allowsHitTesting(false)
+                                }
                             }.frame(width: s, height: s)
                         }
                         .aspectRatio(1, contentMode: .fit)
                     }
+                    CTFCard(model: model)
                     Card(title: "Radial profile (log₁₀ mean power)") { ProfileChart(ps: ps, pixelSizeA: pa) }
                 } else if model.doc != nil {
                     ProgressView("Computing FFT…").padding(.top, 40)
@@ -420,6 +526,71 @@ struct FFTTab: View {
                 }
             }.padding(10)
         }
+    }
+}
+
+struct CTFCard: View {
+    @ObservedObject var model: AppModel
+
+    private func field(_ title: String, _ value: Binding<Double>, _ fmt: String) -> some View {
+        HStack {
+            Text(title).font(.callout).foregroundStyle(.secondary)
+            Spacer()
+            TextField("", value: value, format: .number.precision(.fractionLength(0...2)))
+                .textFieldStyle(.roundedBorder).multilineTextAlignment(.trailing).frame(width: 70)
+                .onSubmit { model.runCTFFit() }
+        }
+    }
+
+    var body: some View {
+        Card(title: "CTF fit (diagnostic, not applied)") {
+            Toggle("Show fitted zeros on spectrum", isOn: $model.showCTFZeros)
+            field("Voltage (kV)", $model.ctfParams.voltageKV, "%.0f")
+            field("Cs (mm)", $model.ctfParams.csMM, "%.1f")
+            field("Amplitude contrast", $model.ctfParams.ampContrast, "%.2f")
+            field("Fit from (Å)", $model.ctfParams.minResA, "%.0f")
+            field("Fit to (Å)", $model.ctfParams.maxResA, "%.0f")
+            HStack {
+                Button("Refit") { model.runCTFFit() }.disabled(model.ctfBusy)
+                if model.ctfBusy { ProgressView().controlSize(.small) }
+            }
+            if let f = model.ctf {
+                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 2) {
+                    GridRow { Text("Defocus").foregroundStyle(.secondary); Text(String(format: "%.2f / %.2f µm", f.df1 / 1e4, f.df2 / 1e4)) }
+                    GridRow { Text("Astigmatism").foregroundStyle(.secondary); Text(f.astigA < 1 ? "none detected" : String(format: "%.0f Å at %.0f°", f.astigA, f.astigDeg)) }
+                    GridRow { Text("Fit range").foregroundStyle(.secondary); Text(String(format: "%.0f – %.0f Å", Double(f.n) * f.pixelSizeA / Double(f.rMin), Double(f.n) * f.pixelSizeA / Double(f.rMax))) }
+                    GridRow { Text("Correlation").foregroundStyle(.secondary); Text(String(format: "%.2f", f.cc)) }
+                }.font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+                CTFFitChart(fit: f)
+                Text("Spectrum (black) vs model CTF² (orange), both with the slow trend removed. Defocus is only as good as the pixel size and voltage in the file header; Cs and amplitude contrast are assumptions. Astigmatism is shown only if it clearly improves the fit.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if let msg = model.ctfMessage {
+                Text(msg).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+struct CTFFitChart: View {
+    let fit: CTFFit
+    var body: some View {
+        let kPer = 1 / (Double(fit.n) * fit.pixelSizeA)
+        Chart {
+            ForEach(Array(fit.rMin...fit.rMax), id: \.self) { r in
+                LineMark(x: .value("freq", Double(r) * kPer), y: .value("z", Double(fit.radData[r])), series: .value("s", "spectrum"))
+                    .foregroundStyle(.primary).lineStyle(StrokeStyle(lineWidth: 1))
+                LineMark(x: .value("freq", Double(r) * kPer), y: .value("z", Double(fit.radModel[r])), series: .value("s", "model"))
+                    .foregroundStyle(.orange).lineStyle(StrokeStyle(lineWidth: 1))
+            }
+        }
+        .chartXAxis {
+            AxisMarks { v in
+                AxisGridLine(); AxisTick()
+                AxisValueLabel { if let f = v.as(Double.self), f > 0 { Text(String(format: "%.0f Å", 1 / f)).font(.caption2) } }
+            }
+        }
+        .chartYAxis(.hidden)
+        .frame(height: 130)
     }
 }
 
