@@ -4,6 +4,12 @@ struct InfoRow: Identifiable {
     let id = UUID()
     let label: String
     let value: String
+    /// Same row with lengths in Å, for rows that carry a length. nil = identical in both units.
+    var angstromValue: String?
+    init(label: String, value: String, angstromValue: String? = nil) {
+        self.label = label; self.value = value; self.angstromValue = angstromValue
+    }
+    func text(angstroms: Bool) -> String { angstroms ? (angstromValue ?? value) : value }
 }
 struct InfoSection: Identifiable {
     let id = UUID()
@@ -90,8 +96,10 @@ extension DMFile {
             InfoRow(label: "Data type", value: e.dataTypeName),
         ]
         if let p = e.pixelSizeA {
-            im.append(InfoRow(label: "Pixel size", value: String(format: "%.4f Å/px  (%.5f nm/px)", p, p / 10)))
-            im.append(InfoRow(label: "Field of view", value: String(format: "%.1f × %.1f nm", Double(e.width) * p / 10, Double(e.height) * p / 10)))
+            im.append(InfoRow(label: "Pixel size", value: String(format: "%.4f Å/px  (%.5f nm/px)", p, p / 10),
+                              angstromValue: String(format: "%.4f Å/px", p)))
+            im.append(InfoRow(label: "Field of view", value: String(format: "%.1f × %.1f nm", Double(e.width) * p / 10, Double(e.height) * p / 10),
+                              angstromValue: String(format: "%.0f × %.0f Å", Double(e.width) * p, Double(e.height) * p)))
         } else {
             im.append(InfoRow(label: "Pixel size", value: "uncalibrated"))
         }
@@ -110,8 +118,12 @@ extension DMFile {
 
         // Acquisition
         var aq: [InfoRow] = []
-        func add(_ rows: inout [InfoRow], _ label: String, _ c: [[String]], unit: String = "", scale: Double? = nil) {
-            if let sc = scale, let v = number(e, c) { rows.append(InfoRow(label: label, value: fmt(v * sc, 6) + unit)) }
+        func add(_ rows: inout [InfoRow], _ label: String, _ c: [[String]], unit: String = "", scale: Double? = nil,
+                 angstromScale: Double? = nil, angstromUnit: String? = nil) {
+            if let sc = scale, let v = number(e, c) {
+                rows.append(InfoRow(label: label, value: fmt(v * sc, 6) + unit,
+                                    angstromValue: angstromScale.map { fmt(v * sc * $0, 6) + (angstromUnit ?? unit) }))
+            }
             else if let t = text(e, c) { rows.append(InfoRow(label: label, value: t + unit)) }
         }
         if let d = acquisitionDate(e) {
@@ -132,9 +144,10 @@ extension DMFile {
         add(&aq, "Exposure #", [["DataBar", "Exposure Number"]])
         add(&aq, "Collection #", [["DataBar", "Collection Number"]])
         if let x = number(e, [["Acquisition", "Spatial drift", "Total drift x (nm)"]]), let y = number(e, [["Acquisition", "Spatial drift", "Total drift y (nm)"]]) {
-            aq.append(InfoRow(label: "Total drift", value: String(format: "(%.2f, %.2f) nm", x, y)))
+            aq.append(InfoRow(label: "Total drift", value: String(format: "(%.2f, %.2f) nm", x, y),
+                              angstromValue: String(format: "(%.1f, %.1f) Å", x * 10, y * 10)))
         }
-        add(&aq, "Mean drift rate", [["Acquisition", "Spatial drift", "Mean rate (nm/s)"]], unit: " nm/s", scale: 1)
+        add(&aq, "Mean drift rate", [["Acquisition", "Spatial drift", "Mean rate (nm/s)"]], unit: " nm/s", scale: 1, angstromScale: 10, angstromUnit: " Å/s")
         if !aq.isEmpty { secs.append(InfoSection(title: "Acquisition", rows: aq)) }
 
         // Microscope

@@ -32,6 +32,15 @@ func runDump(_ args: [String]) {
             if let ps = computePowerSpectrum(pixels: px, width: e.width, height: e.height) {
                 print(String(format: "fft n=%d  %.3fs", ps.n, Date().timeIntervalSince(t3)))
                 print("profile[1,2,5,10,50,100] =", [1, 2, 5, 10, 50, 100].map { ps.profile[$0] })
+                if let pa = e.pixelSizeA {
+                    var cp = CTFParams()
+                    if let kv = f.quickMeta().voltageKV { cp.voltageKV = kv }
+                    let t4 = Date()
+                    if let fit = fitCTF(ps: ps, pixelSizeA: pa, params: cp) {
+                        print(String(format: "ctf (%.0f kV, Cs %.1f, A %.2f, fit %d–%d px, %.2fs): ", cp.voltageKV, cp.csMM, cp.ampContrast, fit.rMin, fit.rMax, Date().timeIntervalSince(t4)) + fit.summary)
+                        if let od = ProcessInfo.processInfo.environment["CTF_RAD_OUT"] { try? ((ps.profile.map { String(log10(Double($0) + 1e-12)) }).joined(separator: ",") + "\n" + String(ps.n) + "," + String(pa)).write(toFile: od, atomically: false, encoding: .utf8) } // ctf_rad
+                    } else { print("ctf fit failed") }
+                }
                 if let oi = args.firstIndex(of: "--fft-png"), oi + 1 < args.count {
                     for (suffix, im) in [("log", ps.imageLog), ("norm", ps.imageNorm)] {
                         guard let im, let d = CGImageDestinationCreateWithURL(URL(fileURLWithPath: args[oi + 1] + "_" + suffix + ".png") as CFURL, "public.png" as CFString, 1, nil) else { continue }

@@ -33,11 +33,19 @@ func runPickTests(_ args: [String]) -> Int32 {
     testAutoPicker(&t)
     testAutoIntegration(&t)
     testExternalPicker(&t)
+    testEngines(&t)
+    testAssist(&t)
     testImportExport(&t)
+    testSessions(&t)
+    testSessionMoves(&t)
     testGallery(&t)
     testClassMapping(&t)
     testSwipe(&t)
+    testPhone(&t)
+    testSwipeDisplay(&t)
+    testSortAndGrid(&t)
     testCTF(&t)
+    testMeasureAndUnits(&t)
     if let i = args.firstIndex(of: "--data"), i + 1 < args.count { testRealData(&t, root: URL(fileURLWithPath: args[i + 1])) }
     print("picktest: \(t.passed) passed, \(t.failed) failed")
     return t.failed == 0 ? 0 : 1
@@ -726,6 +734,72 @@ func testExternalPicker(_ t: inout TestRun) {
     t.check((try? ExternalPicker.run(template: "sleep 5", micrograph: mic, angpix: nil, timeout: 0.3)) == nil, "timeout is an error")
 }
 
+func testEngines(_ t: inout TestRun) {
+    t.section("Topaz / CryoSegNet engines")
+    let fm = FileManager.default
+    let dir = testTempDir()
+    defer { try? fm.removeItem(at: dir) }
+    // a fake interpreter that echoes its arguments as the pick's score fields, so argument passing is checked end to end
+    let py = dir.appendingPathComponent("python")
+    try? "#!/bin/sh\nprintf '[{\"x\":%s,\"y\":2,\"score\":3}]' \"$#\"\n".write(to: py, atomically: false, encoding: .utf8)
+    try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: py.path)
+
+    func touch(_ u: URL) { try? "x".write(to: u, atomically: false, encoding: .utf8) }
+    var c = EngineConfig()
+    t.check(!EngineCommand.problems(.topaz, c).isEmpty, "Topaz without a Python is reported as not ready")
+    t.check(EngineCommand.problems(.builtin, c).isEmpty, "built-in engine never has setup problems")
+    c.topazPython = py.path
+    let scripts = EngineCommand.scriptURL("thon_topaz.py")
+    t.check(scripts != nil, "bundled script is found (bundle or Resources/pickers)")
+    t.check(EngineCommand.problems(.topaz, c).isEmpty, "Topaz is ready once a Python is set", "\(EngineCommand.problems(.topaz, c))")
+    let cmd = EngineCommand.command(.topaz, c, diameterPx: 34.04, brightParticles: true) ?? ""
+    t.check(cmd.contains("{mic}") && cmd.contains("--diameter-px 34.0") && cmd.contains("--invert") && cmd.contains("--threshold -1.0"), "Topaz command has diameter, inversion and cutoff", cmd)
+    t.check(!(EngineCommand.command(.topaz, c, diameterPx: 34, brightParticles: false) ?? "").contains("--invert"), "no inversion for dark particles")
+    c.topazScale = 3
+    t.check((EngineCommand.command(.topaz, c, diameterPx: 34, brightParticles: false) ?? "").contains("--scale 3"), "explicit downscale is passed on")
+    let mic = URL(fileURLWithPath: "/tmp/with space/m.mrc")
+    let r = try? ExternalPicker.run(template: EngineCommand.command(.topaz, c, diameterPx: 34, brightParticles: true) ?? "exit 9", micrograph: mic, angpix: 2.9, environment: ["OMP_NUM_THREADS": "2"])
+    t.check(r?.first?.x == 11 && r?.first?.score == 3, "the command runs through the interpreter with all 11 arguments (script, mic, options)", "\(String(describing: r))")
+
+    var s = EngineConfig()
+    s.csnPython = py.path; s.csnRepo = dir.path; s.csnWeights = dir.path
+    let miss = EngineCommand.problems(.cryosegnet, s)
+    t.check(miss.count == 3, "CryoSegNet lists the missing mps_compat.py and both weight files", "\(miss)")
+    for f in ["mps_compat.py", "cryosegnet.pth", "sam_vit_h_4b8939.pth"] { touch(dir.appendingPathComponent(f)) }
+    t.check(EngineCommand.problems(.cryosegnet, s).isEmpty, "CryoSegNet is ready when folder and weights exist")
+    s.csnTile = 512
+    let sc = EngineCommand.command(.cryosegnet, s, diameterPx: 40, brightParticles: true) ?? ""
+    t.check(sc.contains("--tile 512") && sc.contains("--repo") && sc.contains("--weights") && sc.contains("--device auto"), "CryoSegNet command has tile, repo, weights, device", sc)
+    s.csnTile = 0
+    t.check(!(EngineCommand.command(.cryosegnet, s, diameterPx: 40, brightParticles: true) ?? "").contains("--tile"), "tile 0 = stock whole-micrograph mode")
+
+    // detection in a fake home
+    let home = dir.appendingPathComponent("home")
+    let envBin = home.appendingPathComponent("miniforge3/envs/topaz/bin")
+    try? fm.createDirectory(at: envBin, withIntermediateDirectories: true)
+    let fakeEnvPy = envBin.appendingPathComponent("python")
+    try? "#!/bin/sh\n".write(to: fakeEnvPy, atomically: false, encoding: .utf8)
+    try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeEnvPy.path)
+    let repo = home.appendingPathComponent("Developer/proj/cryosegnet-macos")
+    try? fm.createDirectory(at: repo.appendingPathComponent("pretrained_models"), withIntermediateDirectories: true)
+    touch(repo.appendingPathComponent("mps_compat.py"))
+    touch(repo.appendingPathComponent("pretrained_models/cryosegnet.pth"))
+    let d = EngineCommand.detect(home: home.path)
+    t.check(d.topazPython.hasSuffix("miniforge3/envs/topaz/bin/python") && d.csnPython.isEmpty, "detect finds a conda Topaz env and leaves others empty", d.topazPython)
+    t.check(d.csnRepo.hasSuffix("cryosegnet-macos") && d.csnWeights.hasSuffix("pretrained_models"), "detect finds the CryoSegNet checkout and weights", d.csnRepo)
+
+    // config round-trip and tolerance of older/partial settings
+    let back = try? JSONDecoder().decode(EngineConfig.self, from: (try? JSONEncoder().encode(s)) ?? Data())
+    t.check(back == s, "settings survive JSON round-trip")
+    t.check((try? JSONDecoder().decode(EngineConfig.self, from: Data("{\"threads\":3}".utf8)))?.threads == 3, "partial settings decode with defaults")
+
+    // controller: engines refuse cleanly instead of running when not ready or on non-MRC files
+    let pc = PickController()
+    pc.engine = .cryosegnet
+    pc.runFind(config: EngineConfig())
+    t.check(pc.autoMessage?.hasPrefix("CryoSegNet:") == true && !pc.autoBusy, "runFind explains what is missing and does not start", pc.autoMessage ?? "nil")
+}
+
 // MARK: import / export
 
 func testImportExport(_ t: inout TestRun) {
@@ -1072,7 +1146,7 @@ func testSwipe(_ t: inout TestRun) {
     // export of decisions
     let files = PickExporter.swipeFiles(project: c.store.project)
     let csv = files.first { $0.name == "swipe_decisions.csv" }?.text ?? ""
-    t.check(csv.hasPrefix("card_id,decision,label,x_px,y_px,recentered,decoy,dwell_ms,time\n") && csv.components(separatedBy: "\n").count - 2 == st.cards && files.contains { $0.name == "swipe_stats.json" }, "swipe_decisions.csv + swipe_stats.json")
+    t.check(csv.hasPrefix("card_id,decision,label,x_px,y_px,recentered,decoy,dwell_ms,time,display,mode\n") && csv.components(separatedBy: "\n").count - 2 == st.cards && files.contains { $0.name == "swipe_stats.json" }, "swipe_decisions.csv + swipe_stats.json")
     let out = testTempDir(); defer { try? FileManager.default.removeItem(at: out) }
     _ = try? PickExporter.export(project: c.store.project, root: dir, outDir: out, options: ExportOptions())
     t.check(FileManager.default.fileExists(atPath: out.appendingPathComponent("swipe_decisions.csv").path), "export writes swipe files when decisions exist")
@@ -1087,4 +1161,201 @@ func testSwipe(_ t: inout TestRun) {
     // empty deck / no candidates
     c.setMicrograph(key: "empty.mrc", width: 1024, height: 1024, pixelSizeA: 5); sw.rebuild()
     t.check(sw.done && sw.total == 0, "micrograph without candidates -> empty deck")
+}
+
+
+// MARK: sessions (.thon projects)
+
+func testSessions(_ t: inout TestRun) {
+    t.section("sessions: .thon project file")
+    let fm = FileManager.default
+    let base = testTempDir().absoluteURL.standardizedFileURL; defer { try? fm.removeItem(at: base) }
+    func touch(_ rel: String) -> URL {
+        let u = base.appendingPathComponent(rel)
+        try? fm.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? Data().write(to: u)
+        return u
+    }
+    // three sessions, same micrograph names in each
+    let a1 = touch("data/c1ql3 grid1/Mics/mic_0001.mrc"), a2 = touch("data/c1ql3 grid1/Mics/mic_0002.mrc")
+    let b1 = touch("data/grid2/mic_0001.mrc")
+    let c1 = touch("other drive/grid3/mic_0001.mrc")
+    let folders = [a1.deletingLastPathComponent().deletingLastPathComponent(), b1.deletingLastPathComponent(), c1.deletingLastPathComponent()]
+    let projDir = base.appendingPathComponent("projects")
+    try? fm.createDirectory(at: projDir, withIntermediateDirectories: true)
+    let file = projDir.appendingPathComponent("c1ql3.thon")
+
+    let s = PickStore(); s.saveDelay = 0
+    t.check(s.createProject(file: file, folders: folders) && fm.fileExists(atPath: file.path), "createProject writes the .thon file")
+    t.check(s.isProjectFile && s.project.sessions.map { $0.id } == ["c1ql3_grid1", "grid2", "grid3"], "session ids from folder names (safe characters)", "\(s.project.sessions.map { $0.id })")
+    t.check(s.project.name == "c1ql3" && s.projectTitle == "c1ql3", "project name defaults to the file name")
+    t.check(s.project.sessions[0].folder == "../data/c1ql3 grid1" && s.project.sessions[2].folder == "../other drive/grid3", "session folders stored relative to the project file", "\(s.project.sessions.map { $0.folder })")
+    t.check(s.key(for: a1) == "c1ql3_grid1/Mics/mic_0001.mrc" && s.key(for: b1) == "grid2/mic_0001.mrc" && s.key(for: c1) == "grid3/mic_0001.mrc", "keys are <session>/<path in session>; same file name in 3 sessions stays distinct")
+    t.check(s.url(forKey: "grid2/mic_0001.mrc").standardizedFileURL.path == b1.standardizedFileURL.path, "key -> file")
+    t.check(s.key(for: URL(fileURLWithPath: "/elsewhere/x.mrc")) == "/elsewhere/x.mrc", "file outside every session keeps its absolute path")
+
+    s.add(Pick(id: "p1", x: 10, y: 20, label: "side"), to: "c1ql3_grid1/Mics/mic_0001.mrc")
+    s.add(Pick(id: "p2", x: 30, y: 40, label: "ring_top"), to: "c1ql3_grid1/Mics/mic_0002.mrc")
+    s.add(Pick(id: "p3", x: 5, y: 6, label: "side"), to: "grid2/mic_0001.mrc")
+    s.add(Pick(id: "p4", x: 7, y: 8, label: "side", status: .candidate), to: "grid3/mic_0001.mrc")
+    s.setDone("grid2/mic_0001.mrc", true)
+    let st1 = s.sessionStats("c1ql3_grid1"), st2 = s.sessionStats("grid2"), st3 = s.sessionStats("grid3")
+    t.check(st1.picks == 2 && st1.micrographs == 2 && st2.picks == 1 && st2.done == 1 && st3.picks == 0 && st3.candidates == 1, "per-session statistics", "\(st1) \(st2) \(st3)")
+    s.updateSession({ var x = s.project.sessions[1]; x.name = "Grid 2 (thin ice)"; x.sample = "C1QL3 + detergent"; x.date = "2026-10-28"; x.notes = "good ring tops"; return x }())
+    t.check(s.save(), "save")
+
+    // reopen: organization and picks come back from the file
+    let r = PickStore(); r.saveDelay = 0
+    t.check(r.openProject(file: file) && r.project == s.project, "reopen: project (sessions + picks) round trip is lossless")
+    t.check(r.project.sessions[1].name == "Grid 2 (thin ice)" && r.project.sessions[1].notes == "good ring tops" && r.picks("grid2/mic_0001.mrc").count == 1, "session metadata and picks survive")
+    t.check(r.key(for: b1) == "grid2/mic_0001.mrc", "keys identical after reopen")
+    // renaming a session keeps keys (id is stable)
+    t.check(r.sessionFolder("grid2") != nil && r.sessionFolderExists("grid2") && r.sessionFolderExists("grid3"), "session folders resolve")
+
+    // move the project file: relative paths still point into the data tree when the data moves with it, else the absolute fallback
+    let moved = base.appendingPathComponent("projects2"); try? fm.createDirectory(at: moved, withIntermediateDirectories: true)
+    let file2 = moved.appendingPathComponent("c1ql3.thon"); try? fm.copyItem(at: file, to: file2)
+    let m = PickStore(); m.openProject(file: file2)
+    t.check(m.sessionFolderExists("c1ql3_grid1") && m.sessionFolderExists("grid3"), "project file moved next to its old folder: same-depth relative paths resolve")
+    let far = base.appendingPathComponent("a/b/c/d"); try? fm.createDirectory(at: far, withIntermediateDirectories: true)
+    let file3 = far.appendingPathComponent("c1ql3.thon"); try? fm.copyItem(at: file, to: file3)
+    let f3 = PickStore(); f3.openProject(file: file3)
+    t.check(f3.sessionFolderExists("c1ql3_grid1") && f3.key(for: a1) == "c1ql3_grid1/Mics/mic_0001.mrc", "relative path broken -> stored absolute path is used")
+
+    // missing folder: stays a session, keys and picks intact, flagged missing
+    let hide = base.appendingPathComponent("data/grid2"), hidden = base.appendingPathComponent("data/grid2_moved")
+    try? fm.moveItem(at: hide, to: hidden)
+    let mm = PickStore(); mm.openProject(file: file)
+    t.check(!mm.sessionFolderExists("grid2") && mm.picks("grid2/mic_0001.mrc").count == 1, "missing session folder: flagged, picks kept")
+    mm.relocateSession(id: "grid2", folder: hidden)
+    t.check(mm.sessionFolderExists("grid2") && mm.picks("grid2/mic_0001.mrc").count == 1 && mm.key(for: hidden.appendingPathComponent("mic_0001.mrc")) == "grid2/mic_0001.mrc", "relocate keeps picks attached (key uses the id, not the path)")
+
+    // add / overlap / reorder / remove
+    let extra = touch("data/grid4/m.mrc").deletingLastPathComponent()
+    t.check(mm.addSession(folder: extra)?.id == "grid4" && mm.project.sessions.count == 4, "add session")
+    t.check(mm.addSession(folder: extra) == nil && mm.lastError != nil, "same folder twice rejected")
+    let nested = touch("data/grid4/sub/n.mrc").deletingLastPathComponent()
+    t.check(mm.addSession(folder: nested) == nil, "folder nested in an existing session rejected")
+    t.check(mm.addSession(folder: base.appendingPathComponent("data")) == nil, "folder containing a session rejected")
+    mm.moveSession(from: 3, to: 0)
+    t.check(mm.project.sessions.map { $0.id } == ["grid4", "c1ql3_grid1", "grid2", "grid3"], "reorder")
+    let lost = mm.removeSession(id: "grid3")
+    t.check(lost == 0 && mm.project.sessions.count == 3 && !mm.project.mics.keys.contains { $0.hasPrefix("grid3/") }, "remove session drops its records")
+    let lost2 = mm.removeSession(id: "c1ql3_grid1")
+    t.check(lost2 == 2 && mm.picks("grid2/mic_0001.mrc").count == 1, "removing a session removes only its own picks (2 lost)", "lost \(lost2)")
+    let bk = backupCount(mm.backupDirectory(root: projDir))
+    t.check(bk >= 1, "removing a session with picks writes a backup first", "\(bk)")
+    t.check(((try? fm.contentsOfDirectory(atPath: mm.backupDirectory(root: projDir).path)) ?? []).allSatisfy { $0.hasPrefix("c1ql3_") && $0.hasSuffix(".thon") }, "backups are openable .thon files")
+
+    // export: one dataset per session, per-session filter, raw names relative to the project file
+    let out = base.appendingPathComponent("export")
+    do {
+        var o = ExportOptions(); o.formats = [.relion, .csv]
+        let sum = try PickExporter.export(project: s.project, root: projDir, outDir: out, options: o)
+        let ds = ((try? fm.contentsOfDirectory(atPath: out.path)) ?? []).filter { !$0.hasPrefix(".") && !$0.hasSuffix(".csv") }.sorted()
+        t.check(sum.total == 3 && ds == ["Grid_2_(thin_ice)", "c1ql3_grid1"], "merged export: one dataset folder per session (candidates not exported)", "\(ds) total \(sum.total)")
+        let csv = (try? String(contentsOf: out.appendingPathComponent("all_picks.csv"), encoding: .utf8)) ?? ""
+        t.check(csv.contains("Grid_2_(thin_ice),mic_0001,\(b1.path),"), "CSV carries dataset = session name; raw = absolute path for files outside the project folder", csv)
+        let list = (try? String(contentsOf: out.appendingPathComponent("c1ql3_grid1/coords_list_side.star"), encoding: .utf8)) ?? ""
+        t.check(list.contains("\(a1.path) ") && list.contains("/c1ql3_grid1/side/mic_0001.star"), "coords_list names real micrograph paths", list)
+        var o2 = o; o2.sessionIDs = ["grid2"]
+        let out2 = base.appendingPathComponent("export2")
+        let sum2 = try PickExporter.export(project: s.project, root: projDir, outDir: out2, options: o2)
+        t.check(sum2.total == 1 && sum2.micrographs == 1, "per-session export", "total \(sum2.total)")
+    } catch { t.check(false, "export threw \(error)") }
+
+    // a session folder inside the project folder: raw name relative to the project file; same stem twice in one session -> sub-folder datasets
+    let inner = touch("projects/own/sub1/m1.mrc"), inner2 = touch("projects/own/sub2/m1.mrc")
+    let ip = PickStore(); ip.saveDelay = 0
+    ip.createProject(file: projDir.appendingPathComponent("inner.thon"), folders: [projDir.appendingPathComponent("own")])
+    ip.add(Pick(x: 1, y: 2, label: "side"), to: ip.key(for: inner)); ip.add(Pick(x: 3, y: 4, label: "side"), to: ip.key(for: inner2))
+    t.check(ip.project.sessions[0].folder == "own" && ip.key(for: inner) == "own/sub1/m1.mrc", "session folder inside the project folder: stored relative", ip.project.sessions[0].folder)
+    do {
+        let o3 = base.appendingPathComponent("export3")
+        _ = try PickExporter.export(project: ip.project, root: projDir, outDir: o3, options: ExportOptions())
+        let csv3 = (try? String(contentsOf: o3.appendingPathComponent("all_picks.csv"), encoding: .utf8)) ?? ""
+        t.check(csv3.contains("own__sub1,m1,own/sub1/m1.mrc,") && csv3.contains("own__sub2,m1,own/sub2/m1.mrc,"), "duplicate stems in one session -> one dataset per sub-folder; raw name relative to the project file", csv3)
+    } catch { t.check(false, "export3 threw \(error)") }
+
+    // legacy folder project is unaffected
+    let leg = testTempDir(); defer { try? fm.removeItem(at: leg) }
+    let ls = PickStore(); ls.openProject(folder: leg)
+    t.check(!ls.isProjectFile && !ls.project.isSessionProject && ls.key(for: leg.appendingPathComponent("Micrographs/a.mrc")) == "Micrographs/a.mrc", "folder project keys unchanged")
+    t.check(ls.addSession(folder: leg) == nil, "sessions can only be added to a .thon project")
+    // sparse / hand-written .thon decodes
+    let hw = base.appendingPathComponent("hand.thon")
+    try? Data(#"{"sessions":[{"id":"x","folder":"data/grid4"}],"mics":{"x/m.mrc":{"picks":[{"x":1,"y":2}]}}}"#.utf8).write(to: hw)
+    let h = PickStore(); let okh = h.openProject(file: hw)
+    t.check(okh && h.project.sessions[0].name == "x" && h.picks("x/m.mrc").count == 1 && h.project.scheme == .views, "sparse .thon decodes with defaults")
+}
+
+private func backupCount(_ dir: URL) -> Int { ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).count }
+
+
+func testSessionMoves(_ t: inout TestRun) {
+    t.section("sessions: folder of folders, moving micrographs")
+    let fm = FileManager.default
+    let base = testTempDir().absoluteURL.standardizedFileURL; defer { try? fm.removeItem(at: base) }
+    @discardableResult func touch(_ rel: String) -> URL {
+        let u = base.appendingPathComponent(rel)
+        try? fm.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? Data().write(to: u)
+        return u
+    }
+    // folder of folders
+    touch("parent/grid_b/Mics/x1.dm4"); touch("parent/grid_a/y1.mrc"); touch("parent/notes/readme.txt"); touch("parent/empty/.keep"); touch("parent/loose.mrc")
+    touch("parent/grid_10/z.mrc")
+    let found = SessionDiscovery.subfolderSessions(of: base.appendingPathComponent("parent"))
+    t.check(found.folders.map { $0.lastPathComponent } == ["grid_10", "grid_a", "grid_b"], "sub-folders with micrographs, naturally sorted; folders without micrographs skipped", "\(found.folders.map { $0.lastPathComponent })")
+    t.check(found.looseFiles == 1, "micrographs lying directly in the parent are counted, not added", "\(found.looseFiles)")
+    t.check(SessionDiscovery.subfolderSessions(of: base.appendingPathComponent("parent/grid_a")).folders.isEmpty, "a folder with only micrographs has no sub-folder sessions")
+
+    // moving micrographs
+    let a1 = touch("A/x1.mrc"), a2 = touch("A/x2.mrc"), b1 = touch("B/x1.mrc")
+    let file = base.appendingPathComponent("p.thon")
+    let s = PickStore(); s.saveDelay = 0
+    s.createProject(file: file, folders: [a1.deletingLastPathComponent(), b1.deletingLastPathComponent()])
+    let (kA1, kA2, kB1) = (s.key(for: a1), s.key(for: a2), s.key(for: b1))
+    s.add(Pick(id: "pa", x: 1, y: 2, label: "side"), to: kA1)
+    s.add(Pick(id: "pb", x: 3, y: 4, label: "side"), to: kB1)
+    s.add(Pick(id: "pc", x: 5, y: 6, label: "side"), to: kA2)
+    t.check(s.effectiveSessionID(kA1) == "a" && s.effectiveSessionID(kB1) == "b", "effective session = the folder's session before any move")
+    t.check(s.moveMicrographs([kA1], to: "b") == 1 && s.effectiveSessionID(kA1) == "b" && s.originSessionID(kA1) == "a", "move A/x1 to session B")
+    t.check(s.key(for: a1) == kA1 && s.picks(kA1).count == 1, "key and picks unchanged by a move")
+    t.check(s.moveMicrographs([kA1], to: "b") == 0, "moving to the session it is already in is a no-op")
+    t.check(s.sessionStats("b").picks == 2 && s.sessionStats("a").picks == 1 && s.originStats("a").picks == 2, "stats follow the move; origin stats follow the folder", "\(s.sessionStats("b")) \(s.sessionStats("a")) \(s.originStats("a"))")
+    t.check(s.moveMicrographs([kA1], to: "nope") == 0 && s.moveMicrographs([kA1], to: "b") == 0, "unknown session rejected")
+    s.save()
+    let r = PickStore(); r.openProject(file: file)
+    t.check(r.effectiveSessionID(kA1) == "b" && r.project == s.project, "the move is stored in the project file and survives reopening")
+    // a micrograph without any record: move and move back leaves no empty record behind
+    t.check(s.moveMicrographs([kB1.replacingOccurrences(of: "x1", with: "x9")], to: "a") == 1, "move a micrograph that has no record yet")
+    t.check(s.moveMicrographs([kB1.replacingOccurrences(of: "x1", with: "x9")], to: nil) == 1 && s.project.mics[kB1.replacingOccurrences(of: "x1", with: "x9")] == nil, "moving it back removes the empty record")
+
+    // export: same file stem now in one session -> separate dataset folders, nothing overwritten
+    let out = base.appendingPathComponent("exp")
+    do {
+        let sum = try PickExporter.export(project: s.project, root: base, outDir: out, options: ExportOptions())
+        let ds = ((try? fm.contentsOfDirectory(atPath: out.path)) ?? []).filter { !$0.hasPrefix(".") && !$0.hasSuffix(".csv") }.sorted()
+        t.check(sum.total == 3 && ds == ["A", "B", "B__a"], "moved micrograph exports under its new session; colliding stems keep apart", "\(ds) total \(sum.total)")
+        let csv = (try? String(contentsOf: out.appendingPathComponent("all_picks.csv"), encoding: .utf8)) ?? ""
+        t.check(csv.contains("B__a,x1,") && csv.contains("\nB,x1,") && csv.contains("\nA,x2,"), "CSV datasets: B (own file), B__a (moved in), A (x2)", csv)
+        var o = ExportOptions(); o.sessionIDs = ["b"]
+        let out2 = base.appendingPathComponent("exp2")
+        let sum2 = try PickExporter.export(project: s.project, root: base, outDir: out2, options: o)
+        t.check(sum2.total == 2, "per-session export includes micrographs moved into the session", "\(sum2.total)")
+    } catch { t.check(false, "export threw \(error)") }
+
+    // move back: the override disappears from the file
+    t.check(s.moveMicrographs([kA1], to: nil) == 1 && s.project.mics[kA1]?.session == nil && s.effectiveSessionID(kA1) == "a", "back to its own session")
+    t.check(!String(decoding: (try? s.encoded()) ?? Data(), as: UTF8.self).contains("\"session\""), "no session override left in the JSON")
+
+    // removing sessions with moved micrographs
+    s.moveMicrographs([kA1], to: "b"); s.moveMicrographs([kB1], to: "a")
+    let lost = s.removeSession(id: "b")                                  // B's folder files: only x1 (picks: pb)
+    t.check(lost == 1 && s.picks(kA1).count == 1 && s.effectiveSessionID(kA1) == "a" && s.project.mics[kB1] == nil, "removing B: its own picks are lost (1), A/x1 moved into B returns to A with its picks", "lost \(lost)")
+    // folder project: moves are not available
+    let leg = testTempDir(); defer { try? fm.removeItem(at: leg) }
+    let ls = PickStore(); ls.openProject(folder: leg)
+    t.check(ls.moveMicrographs(["a.mrc"], to: "x") == 0, "folder projects have no sessions to move between")
 }

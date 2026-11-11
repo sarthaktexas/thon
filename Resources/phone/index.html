@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Thon">
+<meta name="theme-color" content="#000000">
+<title>Thon swipe</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon.png">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="app">
+  <header id="top">
+    <div id="levelname">Thon</div>
+    <div id="progress"></div>
+    <div id="badges"><span id="queuebadge" hidden></span><span id="offdot" hidden>offline</span></div>
+    <button id="statsbtn" aria-label="Stats and micrographs">&#9776;</button>
+  </header>
+  <div id="bar"><div id="barfill"></div></div>
+  <nav id="chips" aria-label="Labels"></nav>
+  <main id="stage">
+    <div id="msg" hidden></div>
+    <div id="deck" hidden>
+      <div class="card" id="back"><img id="backimg" alt="" draggable="false"></div>
+      <div class="card" id="front">
+        <img id="frontimg" alt="Candidate particle" draggable="false">
+        <svg id="overlay" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+        <div id="tint"></div>
+      </div>
+    </div>
+  </main>
+  <footer id="buttons">
+    <button id="b-reject" class="act" aria-label="Reject">&#10005;<small>Reject</small></button>
+    <button id="b-later" class="act" aria-label="Later">&#8595;<small>Later</small></button>
+    <button id="b-unsure" class="act" aria-label="Unsure">?<small>Unsure</small></button>
+    <button id="b-pick" class="act" aria-label="Pick">&#10003;<small>Pick</small></button>
+    <button id="b-undo" class="act" aria-label="Undo">&#8630;<small>Undo</small></button>
+  </footer>
+  <div id="hint">Swipe right = pick, left = reject, up = unsure, down = later. Tap the card to recenter.</div>
+</div>
+<section id="panel" hidden>
+  <div id="panelbody"></div>
+</section>
+<div id="toast" hidden></div>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -271,12 +271,13 @@ enum ExternalPicker {
         return list.map { AutoCandidate(x: $0.x, y: $0.y, score: $0.score ?? 1) }
     }
 
-    static func run(template: String, micrograph: URL, angpix: Double?, timeout: TimeInterval = 600) throws -> [AutoCandidate] {
+    static func run(template: String, micrograph: URL, angpix: Double?, timeout: TimeInterval = 600, environment: [String: String] = [:]) throws -> [AutoCandidate] {
         let cmd = template.replacingOccurrences(of: "{mic}", with: shellQuote(micrograph.path))
             .replacingOccurrences(of: "{angpix}", with: angpix.map { String($0) } ?? "")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
         p.arguments = ["-c", cmd]
+        if !environment.isEmpty { p.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new } }
         let out = Pipe(), err = Pipe()
         p.standardOutput = out; p.standardError = err
         try p.run()

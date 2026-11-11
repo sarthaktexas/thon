@@ -142,7 +142,7 @@ final class GalleryModel: ObservableObject {
         let boxPx = pc.boxPx, smooth = self.smooth, invert = self.invert
         let byKey = Dictionary(grouping: missing, by: { $0.key })
         let curKey = pc.currentKey, curPixels = pc.pixels, curW = Int(pc.imageSize.width), curH = Int(pc.imageSize.height)
-        let loader = self.loader, root = pc.store.root
+        let loader = self.loader, root = pc.store.root, km = pc.store.keyResolver()
         let total = missing.count
         progress = "Rendering \(total) crops…"
         queue.async { [weak self] in
@@ -150,7 +150,7 @@ final class GalleryModel: ObservableObject {
             for (key, list) in byKey.sorted(by: { $0.key < $1.key }) {
                 if self?.token != tk { return }
                 var src: (pixels: [Float], width: Int, height: Int)?
-                if key == curKey, !curPixels.isEmpty { src = (curPixels, curW, curH) } else { src = loader?(root, key) }
+                if key == curKey, !curPixels.isEmpty { src = (curPixels, curW, curH) } else { src = loader?(root, km.isSessions ? km.url(forKey: key).path : key) }
                 guard let s = src else { done += list.count; continue }
                 let win = robustWindow(s.pixels)
                 var res: [(String, Double, Double, [UInt8])] = []
@@ -172,7 +172,7 @@ final class GalleryModel: ObservableObject {
     /// Synchronous variant for tests: renders every missing crop using the loader.
     func renderAllSync() {
         for (key, list) in Dictionary(grouping: items.filter { $0.thumb == nil }, by: { $0.key }) {
-            let src: (pixels: [Float], width: Int, height: Int)? = (key == pc.currentKey && !pc.pixels.isEmpty) ? (pc.pixels, Int(pc.imageSize.width), Int(pc.imageSize.height)) : loader?(pc.store.root, key)
+            let src: (pixels: [Float], width: Int, height: Int)? = (key == pc.currentKey && !pc.pixels.isEmpty) ? (pc.pixels, Int(pc.imageSize.width), Int(pc.imageSize.height)) : loader?(pc.store.root, pc.store.keyResolver().isSessions ? pc.store.url(forKey: key).path : key)
             guard let s = src else { continue }
             let win = robustWindow(s.pixels)
             for it in list {

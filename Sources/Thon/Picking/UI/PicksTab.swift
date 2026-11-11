@@ -4,6 +4,7 @@ struct PicksTab: View {
     @ObservedObject var model: AppModel
     @ObservedObject var pc: PickController
     @ObservedObject var store: PickStore
+    @ObservedObject var units = UnitSettings.shared
 
     private var key: String? { pc.currentKey }
 
@@ -11,11 +12,11 @@ struct PicksTab: View {
         ScrollView {
             VStack(spacing: 10) {
                 modeCard
-                autoCard
+                findCard
+                reviewCard
                 labelsCard
-                markerCard
-                micrographCard
                 LoupeCard(model: model, pc: pc, cursor: model.cursor)
+                micrographCard
                 classesCard
                 ioCard
                 projectCard
@@ -32,6 +33,7 @@ struct PicksTab: View {
             HStack {
                 Toggle("Pick mode (P)", isOn: $pc.enabled)
                 Spacer()
+                Button { model.showGrid = true } label: { Label("Grid triage", systemImage: "square.grid.3x3") }.controlSize(.small)
                 Button { model.showSwipe = true } label: { Label("Swipe mode (S)", systemImage: "rectangle.stack") }.controlSize(.small)
             }
             HStack {
@@ -49,46 +51,90 @@ struct PicksTab: View {
         }
     }
 
-    private var autoCard: some View {
-        Card(title: "Auto-pick") {
+    /// Everything that decides which particles are found, in the order it is used: size, method, run.
+    private var findCard: some View {
+        Card(title: "Find particles") {
+            let params = store.project.params
+            let diam = Binding(get: { store.project.params.diameterNm }, set: { v in var p = store.project.params; p.diameterNm = v; store.setParams(p) })
+            let box = Binding(get: { store.project.params.boxNm }, set: { v in var p = store.project.params; p.boxNm = v; store.setParams(p) })
             let ap = $pc.autoParams
-            Picker("Method", selection: ap.method) { ForEach(PickMethod.allCases) { Text($0.rawValue).tag($0) } }
-                .pickerStyle(.segmented).labelsHidden()
-            Toggle("Particles are brighter than background", isOn: ap.bright)
-            slider("Score threshold (robust z)", ap.zThreshold, 2...12, "%.1f")
-            slider("Min separation × diameter", Binding(get: { pc.autoParams.minSepNm == 0 ? 0.9 : pc.autoParams.minSepNm / max(store.project.params.diameterNm, 1) },
-                                                        set: { pc.autoParams.minSepNm = $0 * store.project.params.diameterNm }), 0.3...2, "%.2f")
-            slider("Flatten background σ (nm, 0 = off)", ap.flattenNm, 0...400, "%.0f")
-            slider("Smoothing σ (nm, 0 = auto)", ap.smoothNm, 0...20, "%.1f")
+            lengthSlider("Particle diameter", diam, 3...80, nmFormat: "%.1f")
+            lengthSlider("Extraction box", box, 5...150, nmFormat: "%.1f")
+            let pa = pc.effectiveAngpix
+            Text(String(format: "= %.0f px marker, %.0f px box at %.4g Å/px", params.diameterNm * 10 / pa, params.boxNm * 10 / pa, pa)
+                 + (pc.pixelSizeA == nil ? " (uncalibrated: 1 Å/px assumed)" : ""))
+                .font(.caption).foregroundStyle(.secondary)
             HStack {
-                Text("Max picks").font(.callout)
-                Stepper(value: ap.maxPicks, in: 10...5000, step: 50) { Text("\(pc.autoParams.maxPicks)").monospacedDigit() }
+                Button("Resize all to default") { if let k = key { store.setDiameter(nil, nm: nil, in: k) } }.controlSize(.small)
+                Spacer()
+                Text(", / . : resize selection (or default)").font(.caption2).foregroundStyle(.secondary)
             }
-            Text("Uses the particle diameter under Size.").font(.caption).foregroundStyle(.secondary)
+            Divider()
+            Picker("Engine", selection: $pc.engine) { ForEach(PickEngine.allCases) { Text($0.rawValue).tag($0) } }
+                .pickerStyle(.segmented).labelsHidden()
+                .onChange(of: pc.engine) { _, _ in pc.autoLive = false; pc.autoMessage = nil }
+            if pc.engine == .builtin {
+                Picker("Method", selection: ap.method) { ForEach(PickMethod.allCases) { Text($0.rawValue).tag($0) } }
+                    .pickerStyle(.segmented).labelsHidden()
+            }
+            Toggle("Particles are brighter than background", isOn: ap.bright)
+            if pc.engine == .builtin { slider("Score threshold (robust z)", ap.zThreshold, 2...12, "%.1f") }
+            else { EngineSetupView(engine: pc.engine) }
             HStack {
-                Button { pc.runAutoPick() } label: { Label(pc.autoBusy ? "Working…" : "Find particles", systemImage: "sparkles") }
+                Button { pc.runFind() } label: { Label(pc.autoBusy ? "Working…" : "Find particles", systemImage: "sparkles") }
+                    .buttonStyle(.borderedProminent)
                     .disabled(pc.autoBusy || key == nil)
-                Toggle("Live", isOn: $pc.autoLive).toggleStyle(.checkbox).help("Re-run automatically when a setting changes")
+                if pc.engine == .builtin {
+                    Toggle("Live", isOn: $pc.autoLive).toggleStyle(.checkbox).help("Re-run automatically when a setting changes")
+                }
                 if pc.autoBusy { ProgressView().controlSize(.small) }
             }
             if let m = pc.autoMessage { Text(m).font(.caption).foregroundStyle(.secondary) }
-            Divider()
-            slider("Show candidates with score ≥", Binding(get: { Double(pc.scoreCutoff) }, set: { pc.scoreCutoff = Float($0) }), 0...Double(pc.maxScore), "%.1f")
-            Toggle("Show scores", isOn: $pc.showScores)
-            HStack {
-                Button("Accept all shown (A)") { pc.acceptAllCandidates() }
-                Button("Dismiss hidden") { pc.dismissBelowCutoff() }
-            }.controlSize(.small)
-            HStack {
-                Button("Remove overlaps") { pc.removeOverlapping() }
-                Button("Remove edge picks") { pc.removeEdgePicks() }
-                Button("Clear candidates") { pc.dismissAllCandidates() }
-            }.controlSize(.small)
+            if pc.engine == .builtin { DisclosureGroup("More settings") {
+                VStack(alignment: .leading, spacing: 6) {
+                    slider("Min separation × diameter", Binding(get: { pc.autoParams.minSepNm == 0 ? 0.9 : pc.autoParams.minSepNm / max(store.project.params.diameterNm, 1) },
+                                                                set: { pc.autoParams.minSepNm = $0 * store.project.params.diameterNm }), 0.3...2, "%.2f")
+                    lengthSlider("Flatten background σ", ap.flattenNm, 0...400, nmFormat: "%.0f", note: ", 0 = off")
+                    lengthSlider("Smoothing σ", ap.smoothNm, 0...20, nmFormat: "%.1f", note: ", 0 = auto")
+                    HStack {
+                        Text("Max picks").font(.callout)
+                        Stepper(value: ap.maxPicks, in: 10...5000, step: 50) { Text("\(pc.autoParams.maxPicks)").monospacedDigit() }
+                    }
+                }.padding(.top, 4)
+            } }
             DisclosureGroup("External picker command") {
-                TextField("script.py {mic} {angpix}", text: $pc.externalCommand).textFieldStyle(.roundedBorder)
-                Text("Must print JSON: [{\"x\":..,\"y\":..,\"score\":..}] (pixel coordinates, origin top-left). Results appear as candidates.")
-                    .font(.caption2).foregroundStyle(.secondary)
-                Button("Run command") { pc.runExternalPicker() }.disabled(pc.autoBusy || pc.externalCommand.isEmpty).controlSize(.small)
+                VStack(alignment: .leading, spacing: 6) {
+                    TextField("script.py {mic} {angpix}", text: $pc.externalCommand).textFieldStyle(.roundedBorder)
+                    Text("Must print JSON: [{\"x\":..,\"y\":..,\"score\":..}] (pixel coordinates, origin top-left). Results appear as candidates.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Button("Run command") { pc.runExternalPicker() }.disabled(pc.autoBusy || pc.externalCommand.isEmpty).controlSize(.small)
+                }.padding(.top, 4)
+            }
+        }
+    }
+
+    /// What to do with the candidates once they are on the micrograph.
+    private var reviewCard: some View {
+        Card(title: "Review candidates") {
+            let cands = key.map { store.candidates($0) } ?? []
+            if cands.isEmpty {
+                Text("No candidates on this micrograph yet. Press Find particles above.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                let shown = cands.filter { ($0.score ?? .infinity) >= pc.scoreCutoff }.count
+                slider("Show candidates with score ≥", Binding(get: { Double(pc.scoreCutoff) }, set: { pc.scoreCutoff = Float($0) }), 0...Double(pc.maxScore), "%.1f")
+                Text("\(shown) of \(cands.count) candidates shown").font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("Accept all shown (A)") { pc.acceptAllCandidates() }.buttonStyle(.borderedProminent)
+                    Button("Dismiss hidden") { pc.dismissBelowCutoff() }
+                }.controlSize(.small)
+                Toggle("Show scores", isOn: $pc.showScores)
+                DisclosureGroup("Clean up") {
+                    HStack {
+                        Button("Remove overlaps") { pc.removeOverlapping() }
+                        Button("Remove edge picks") { pc.removeEdgePicks() }
+                        Button("Clear candidates") { pc.dismissAllCandidates() }
+                    }.controlSize(.small).padding(.top, 4)
+                }
             }
         }
     }
@@ -143,25 +189,6 @@ struct PicksTab: View {
         }
     }
 
-    private var markerCard: some View {
-        Card(title: "Size") {
-            let params = store.project.params
-            let diam = Binding(get: { store.project.params.diameterNm }, set: { v in var p = store.project.params; p.diameterNm = v; store.setParams(p) })
-            let box = Binding(get: { store.project.params.boxNm }, set: { v in var p = store.project.params; p.boxNm = v; store.setParams(p) })
-            slider("Particle diameter (nm)", diam, 3...80, "%.1f")
-            slider("Extraction box (nm)", box, 5...150, "%.1f")
-            let pa = pc.effectiveAngpix
-            Text(String(format: "= %.0f px marker, %.0f px box at %.4g Å/px", params.diameterNm * 10 / pa, params.boxNm * 10 / pa, pa)
-                 + (pc.pixelSizeA == nil ? " (uncalibrated: 1 Å/px assumed)" : ""))
-                .font(.caption).foregroundStyle(.secondary)
-            HStack {
-                Button("Resize all to default") { if let k = key { store.setDiameter(nil, nm: nil, in: k) } }.controlSize(.small)
-                Spacer()
-                Text(", / . : resize selection (or default)").font(.caption2).foregroundStyle(.secondary)
-            }
-        }
-    }
-
     private var micrographCard: some View {
         Card(title: "This micrograph") {
             if let k = key {
@@ -176,7 +203,7 @@ struct PicksTab: View {
     }
 
     private var classesCard: some View {
-        Card(title: "RELION classes") {
+        CollapsibleCard(title: "RELION classes", id: "classes") {
             HStack {
                 Button("Load classification…") { PickPanels.chooseClasses(model: model) }
                 Button("Gallery… (G)") { model.showGallery = true }
@@ -218,10 +245,16 @@ struct PicksTab: View {
     }
 
     private var ioCard: some View {
-        Card(title: "Import / export") {
+        CollapsibleCard(title: "Import / export", id: "io", defaultOpen: true) {
             ForEach(ExportFormat.allCases) { f in
                 Toggle(f.rawValue, isOn: Binding(get: { pc.exportFormats.contains(f) },
                                                  set: { if $0 { pc.exportFormats.insert(f) } else { pc.exportFormats.remove(f) } }))
+            }
+            if store.project.isSessionProject {
+                Picker("Sessions", selection: $pc.exportSessionID) {
+                    Text("All sessions (one dataset folder each)").tag(String?.none)
+                    ForEach(store.project.sessions) { Text($0.name).tag(Optional($0.id)) }
+                }.controlSize(.small)
             }
             Toggle("Only micrographs marked Done", isOn: $pc.exportOnlyDone)
             if store.project.params.maybeFlag { Toggle("Leave out picks flagged maybe", isOn: $pc.exportExcludeMaybe) }
@@ -231,7 +264,7 @@ struct PicksTab: View {
                 Button("Import as candidates…") { PickPanels.chooseImport(model: model, asCandidates: true) }
             }.controlSize(.small)
             if let m = pc.ioMessage { Text(m).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-            Text("Export layout = the web picker's picks_export/: <dataset>/<label>/<micrograph>.star, coords_list_<label>.star, all_picks.csv. Only accepted picks of exported labels are written.")
+            Text("Export layout = the web picker's picks_export/: <dataset>/<label>/<micrograph>.star, coords_list_<label>.star, all_picks.csv. Only accepted picks of exported labels are written." + (store.project.isSessionProject ? " In a .thon project <dataset> is the session name." : ""))
                 .font(.caption2).foregroundStyle(.secondary)
         }
     }
@@ -250,10 +283,20 @@ struct PicksTab: View {
     }
 
     private var helpCard: some View {
-        Card(title: "Mouse and keys") {
+        CollapsibleCard(title: "Mouse and keys", id: "keys") {
             Text("Click: add / select · drag a pick: move · drag empty: pan · shift-drag: box select · right-click: delete · ⌫: delete selection · 1–6: label · ⌘Z / ⇧⌘Z: undo / redo · Esc: deselect")
                 .font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    /// Slider for a length stored in nm, shown and dragged in the display unit (nm or Å).
+    private func lengthSlider(_ title: String, _ nm: Binding<Double>, _ rangeNm: ClosedRange<Double>,
+                              nmFormat: String, note: String = "") -> some View {
+        let a = units.angstroms
+        let shown = Binding(get: { LengthUnits.fromNm(nm.wrappedValue, angstroms: a) },
+                            set: { nm.wrappedValue = LengthUnits.toNm($0, angstroms: a) })
+        let range = LengthUnits.fromNm(rangeNm.lowerBound, angstroms: a)...LengthUnits.fromNm(rangeNm.upperBound, angstroms: a)
+        return slider("\(title) (\(LengthUnits.name(a))\(note))", shown, range, a ? "%.0f" : nmFormat)
     }
 
     private func slider(_ title: String, _ v: Binding<Double>, _ r: ClosedRange<Double>, _ f: String) -> some View {
@@ -297,6 +340,23 @@ struct LoupeCard: View {
                         let d = pc.diameterPx(Pick(x: 0, y: 0, label: pc.activeLabel)) * Double(side) / Double(2 * half)
                         Circle().stroke(swiftUIColor(pc.store.scheme.label(pc.activeLabel)?.color ?? "#ffffff"), lineWidth: 1.2)
                             .frame(width: d, height: d)
+                        // existing picks inside the crop (same drawing as the main overlay)
+                        if pc.showMarkers {
+                            let scale = Double(side) / Double(2 * half)
+                            let x0 = Double(x - half), y0 = Double(y - half)
+                            let sel = pc.selection
+                            let boxPts = pc.boxPx * scale
+                            Canvas { ctx, _ in
+                                for p in pc.visiblePicks {
+                                    // array index -> crop coordinates (pixel centre = +0.5), then points
+                                    let c = CGPoint(x: (p.x - x0 + 0.5) * scale, y: (p.y - y0 + 0.5) * scale)
+                                    let r = pc.diameterPx(p) * scale / 2
+                                    guard CGRect(x: -r, y: -r, width: Double(side) + 2 * r, height: Double(side) + 2 * r).contains(c) else { continue }
+                                    PickOverlay.drawPick(&ctx, p, at: c, radius: r, pc: pc, store: pc.store, selected: sel.contains(p.id), boxPts: boxPts)
+                                }
+                            }
+                            .frame(width: side, height: side).allowsHitTesting(false)
+                        }
                         Path { p in
                             p.move(to: CGPoint(x: side / 2 - 6, y: side / 2)); p.addLine(to: CGPoint(x: side / 2 + 6, y: side / 2))
                             p.move(to: CGPoint(x: side / 2, y: side / 2 - 6)); p.addLine(to: CGPoint(x: side / 2, y: side / 2 + 6))
@@ -304,7 +364,7 @@ struct LoupeCard: View {
                     }
                     .frame(width: side, height: side).clipShape(RoundedRectangle(cornerRadius: 4))
                     .frame(maxWidth: .infinity)
-                    Text("80 × 80 px around the cursor; circle = active marker size (raw data, current contrast)")
+                    Text("80 × 80 px around the cursor; picks shown as in the main view; thin circle = active marker size (raw data, current contrast)")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             } else {
@@ -378,5 +438,36 @@ struct LabelEditor: View {
             }
         }
         .padding(16).frame(width: 760, height: 500)
+    }
+}
+
+
+/// A Card whose body folds away; the open/closed state is remembered between launches.
+struct CollapsibleCard<Content: View>: View {
+    let title: String
+    @AppStorage private var open: Bool
+    @ViewBuilder var content: Content
+
+    init(title: String, id: String, defaultOpen: Bool = false, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self._open = AppStorage(wrappedValue: defaultOpen, "picker.card.\(id)")
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button { withAnimation(.easeInOut(duration: 0.15)) { open.toggle() } } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: open ? "chevron.down" : "chevron.right").font(.caption2.weight(.bold)).frame(width: 10)
+                    Text(title.uppercased()).font(.caption.weight(.semibold))
+                    Spacer()
+                }
+                .foregroundStyle(.secondary).contentShape(Rectangle())
+            }.buttonStyle(.plain)
+            if open { content }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
     }
 }

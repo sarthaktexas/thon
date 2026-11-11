@@ -53,6 +53,7 @@ struct MicRecord: Codable, Equatable {
     var height: Int?
     var angpix: Double?
     var swipe: SwipeLog?             // card-deck review decisions (statistics / audit)
+    var session: String?             // .thon projects: session this micrograph is listed / exported under (nil = the session whose folder holds the file)
     init() {}
     init(from d: Decoder) throws {   // tolerant: hand-edited / older files may omit fields
         let c = try d.container(keyedBy: CodingKeys.self)
@@ -64,6 +65,7 @@ struct MicRecord: Codable, Equatable {
         height = try c.decodeIfPresent(Int.self, forKey: .height)
         angpix = try c.decodeIfPresent(Double.self, forKey: .angpix)
         swipe = try c.decodeIfPresent(SwipeLog.self, forKey: .swipe)
+        session = try c.decodeIfPresent(String.self, forKey: .session)
     }
 }
 
@@ -86,6 +88,8 @@ struct PickProject: Codable, Equatable {
     static var newProjectScheme = LabelScheme.default
     var scheme = PickProject.newProjectScheme
     var params = ProjectParams()
+    var name: String?                          // project title (.thon projects)
+    var sessions: [PickSession] = []           // imaging sessions; empty for a plain folder project
     var mics: [String: MicRecord] = [:]
     init() {}
     init(from d: Decoder) throws {
@@ -93,6 +97,8 @@ struct PickProject: Codable, Equatable {
         version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
         scheme = try c.decodeIfPresent(LabelScheme.self, forKey: .scheme) ?? .views   // files written before schemes were stored used the six view labels
         params = try c.decodeIfPresent(ProjectParams.self, forKey: .params) ?? ProjectParams()
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+        sessions = try c.decodeIfPresent([PickSession].self, forKey: .sessions) ?? []
         mics = try c.decodeIfPresent([String: MicRecord].self, forKey: .mics) ?? [:]
     }
 }

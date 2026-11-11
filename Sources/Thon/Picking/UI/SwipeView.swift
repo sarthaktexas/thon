@@ -5,7 +5,10 @@ struct SwipeView: View {
     @ObservedObject var pc: PickController
     @ObservedObject var sw: SwipeSession
     @ObservedObject var store: PickStore
+    @ObservedObject var units = UnitSettings.shared
     @FocusState private var focused: Bool
+    @AppStorage("swipe.showDisplay") private var showDisplay = true
+    @AppStorage("swipe.deck") private var deckKind = "sort"
 
     init(model: AppModel) {
         self.model = model; self.pc = model.picks; self.sw = model.picks.swipe; self.store = model.picks.store
@@ -13,15 +16,27 @@ struct SwipeView: View {
 
     private let side: CGFloat = 460
 
+    /// Sort (classify accepted picks, swipe direction = label) or Review (accept / reject auto candidates).
     var body: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $deckKind) {
+                Text("Sort particles").tag("sort")
+                Text("Review candidates").tag("review")
+            }.pickerStyle(.segmented).labelsHidden().frame(width: 320).padding(.top, 10)
+            if deckKind == "sort" { SortView(model: model) } else { reviewBody }
+        }
+    }
+
+    private var reviewBody: some View {
         VStack(spacing: 10) {
             header
-            if sw.done { finished } else { card }
+            if sw.done { finished } else { card; SwipeCaption(sw: sw, pc: pc, out: Int(side), width: side + 60) }
             if !sw.done { buttons }
+            DisplayPanel(sw: sw)
             settings
         }
         .padding(16)
-        .frame(minWidth: 620, minHeight: 760)
+        .frame(minWidth: 640, minHeight: showDisplay ? 880 : 760)
         .focusable().focused($focused).focusEffectDisabled()
         .onKeyPress(phases: .down) { handle($0) }
         .onAppear { focused = true; sw.rebuild() }
@@ -63,10 +78,15 @@ struct SwipeView: View {
         let strength = min(1, max(abs(drag.width), abs(drag.height)) / 140)
         return ZStack {
             if let c = sw.current {
-                if let bytes = sw.cardImage(out: 360), let img = grayCGImage(bytes, width: 360, height: 360) {
-                    Image(decorative: img, scale: 1).interpolation(.high).resizable().frame(width: side, height: side)
+                if let bytes = sw.cardImage(out: Int(side)), let img = grayCGImage(bytes, width: Int(side), height: Int(side)) {
+                    Image(decorative: img, scale: 1).interpolation(sw.display.pixelated ? .none : .high).resizable().frame(width: side, height: side)
                 } else { Rectangle().fill(.quaternary).frame(width: side, height: side) }
                 markers(c)
+                if sw.display.isDenoised {      // dashed orange frame: this is not the raw image
+                    RoundedRectangle(cornerRadius: 8).inset(by: 5).strokeBorder(Color.orange, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
+                        .frame(width: side, height: side).allowsHitTesting(false)
+                }
+                SwipeBadge(sw: sw, pc: pc).frame(width: side, height: side, alignment: .topLeading)
             }
             Rectangle().fill(tint.opacity(0.35 * strength)).frame(width: side, height: side).allowsHitTesting(false)
         }
@@ -128,7 +148,7 @@ struct SwipeView: View {
             if sw.total == 0 && l.cards == 0 {
                 Text("No candidates on this micrograph").font(.title3)
                 Text("Run the auto-picker to generate cards (Picks tab settings apply).").foregroundStyle(.secondary)
-                Button { pc.runAutoPick() } label: { Label(pc.autoBusy ? "Working…" : "Find particles", systemImage: "sparkles") }.disabled(pc.autoBusy)
+                Button { pc.runFind() } label: { Label(pc.autoBusy ? "Working…" : "Find particles", systemImage: "sparkles") }.disabled(pc.autoBusy)
             } else {
                 Text("Micrograph finished").font(.title3)
                 Text("\(l.pick) particles · \(l.reject) rejected · \(l.unsure) unsure (\(l.cards) cards)")
@@ -149,13 +169,15 @@ struct SwipeView: View {
         VStack(spacing: 4) {
             HStack {
                 Text("Window").font(.caption); Slider(value: $sw.windowNm, in: 20...120).frame(width: 140)
-                Text(String(format: "%.0f nm", sw.windowNm * (sw.zoomedOut ? 2.6 : 1))).font(.caption).monospacedDigit().frame(width: 50, alignment: .leading)
+                Text(String(format: units.angstroms ? "%.0f Å" : "%.0f nm", LengthUnits.fromNm(sw.windowNm * (sw.zoomedOut ? 2.6 : 1), angstroms: units.angstroms)))
+                    .font(.caption).monospacedDigit().frame(width: 58, alignment: .leading)
                 Toggle("Box (B)", isOn: $sw.showBox).toggleStyle(.checkbox).font(.caption)
                 Spacer()
                 Stepper("Cards/micrograph \(sw.depth)", value: $sw.depth, in: 20...1000, step: 20).font(.caption)
                 HStack { Text("Decoys").font(.caption); Slider(value: $sw.decoyRate, in: 0...0.2, step: 0.02).frame(width: 70) }
             }
-            Text("→ / Enter particle · 1–9 particle with that label · ← / X reject · ↑ / U unsure · ↓ / L later · Z undo · Space zoom out · click the card to move the cross onto the true center. About 8% of cards are random spots (control); they are never exported.")
+            AssistView(rr: sw.reranker)
+            Text("→ / Enter particle · 1–9 particle with that label · ← / X reject · ↑ / U unsure · ↓ / L later · Z undo · Space zoom out · V / , . - = I 0 display (see above) · click the card to move the cross onto the true center. About 8% of cards are random spots (control); they are never exported.")
                 .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
     }
@@ -174,6 +196,7 @@ struct SwipeView: View {
         default: break
         }
         let c = p.characters.lowercased()
+        if sw.handleDisplayKey(c) { return .handled }
         switch c {
         case "x": sw.reject(); return .handled
         case "u": sw.unsure(); return .handled

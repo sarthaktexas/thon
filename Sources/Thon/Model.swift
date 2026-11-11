@@ -100,6 +100,7 @@ final class AppModel: ObservableObject {
     @Published var inspectorTab: InspectorTab = .overview
     @Published var showGallery = false
     @Published var showSwipe = false
+    @Published var showGrid = false
     @Published var showSessions = false
     @Published var collapsedSessions: Set<String> = []
 

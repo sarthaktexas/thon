@@ -12,6 +12,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Thon"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+mkdir -p "$APP/Contents/Resources/pickers" && cp Resources/pickers/*.py "$APP/Contents/Resources/pickers/"
 codesign --force --deep --sign - "$APP"
 echo "Built $PWD/$APP"
 if [[ "${1:-}" == "--install" ]]; then

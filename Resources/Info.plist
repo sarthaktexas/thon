@@ -13,6 +13,8 @@
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>NSLocalNetworkUsageDescription</key><string>Thon lets your phone swipe through particle candidates over your local network, only while the Phone panel is switched on.</string>
+    <key>NSBonjourServices</key><array><string>_http._tcp</string></array>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>
@@ -20,6 +22,12 @@
             <key>CFBundleTypeExtensions</key><array><string>dm3</string><string>dm4</string><string>mrc</string><string>mrcs</string></array>
             <key>CFBundleTypeRole</key><string>Viewer</string>
             <key>LSHandlerRank</key><string>Alternate</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key><string>Thon project</string>
+            <key>CFBundleTypeExtensions</key><array><string>thon</string></array>
+            <key>CFBundleTypeRole</key><string>Editor</string>
+            <key>LSHandlerRank</key><string>Owner</string>
         </dict>
     </array>
 </dict>

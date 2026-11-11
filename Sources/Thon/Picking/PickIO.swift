@@ -273,6 +273,7 @@ struct ExportOptions {
     var formats: Set<ExportFormat> = [.relion, .csv]
     var onlyDone = false
     var excludeMaybe = false                         // leave out picks flagged "maybe"
+    var sessionIDs: Set<String>?                     // export only these sessions (nil = all; ignored for folder projects)
     var coordPrefix: String?                         // path written into coords_list_<label>.star (default: relative to the project)
 }
 
@@ -294,6 +295,26 @@ enum PickExporter {
         return s
     }
     static func csvField(_ s: String) -> String { s.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" }) ? "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\"" : s }
+
+    /// Dataset folder name for a micrograph key. In a session project it is the session name; the sub-folder inside the session folder
+    /// is appended only for sessions in `splitSessions` (two micrographs there share a file stem, so one folder would overwrite the other).
+    /// `effective` is the session the micrograph was moved to (nil = the session whose folder holds it).
+    static func dataset(for key: String, rootName: String, sessions: [PickSession], effective: String? = nil, splitSessions: Set<String> = []) -> String {
+        let origin = sessions.first(where: { key.hasPrefix($0.id + "/") })
+        guard let s = effective.flatMap({ id in sessions.first { $0.id == id } }) ?? origin else { return dataset(for: key, rootName: rootName) }
+        func clean(_ n: String) -> String {
+            let t = n.map { "/\\:,\"".contains($0) || $0.isWhitespace ? "_" : String($0) }.joined()
+            return t.isEmpty ? s.id : t
+        }
+        let base = clean(s.name)
+        let name = sessions.filter { clean($0.name) == base }.count > 1 ? base + "_" + s.id : base
+        var sub = ""
+        if splitSessions.contains(s.id), let o = origin {
+            sub = ((String(key.dropFirst(o.id.count + 1))) as NSString).deletingLastPathComponent
+            if o.id != s.id { sub = sub.isEmpty ? o.id : o.id + "/" + sub }          // moved in from another session: keep its files apart
+        }
+        return sub.isEmpty ? name : name + "__" + sub.replacingOccurrences(of: "/", with: "__")
+    }
 
     static func dataset(for key: String, rootName: String) -> String {
         let parent = (key as NSString).deletingLastPathComponent
@@ -334,6 +355,20 @@ enum PickExporter {
         var sum = ExportSummary(outDir: outDir)
         sum.skippedLabels = scheme.labels.filter { !$0.exported }.map { $0.id }
         let rootName = root.lastPathComponent
+        let km = PickKeyMap(root: root, sessions: project.sessions)
+        // sessions in which two micrographs share a file stem need one dataset folder per sub-folder
+        var stems: [String: Set<String>] = [:], split = Set<String>()
+        func effSession(_ key: String, _ rec: MicRecord) -> String? {       // moved-to session if it still exists, else the one holding the file
+            if let m = rec.session, project.sessions.contains(where: { $0.id == m }) { return m }
+            return km.sessionID(ofKey: key)
+        }
+        for (key, rec) in project.mics { if let id = effSession(key, rec), !stems[id, default: []].insert(PickImporter.stem(key)).inserted { split.insert(id) } }
+        /// What RELION / CSV get as the micrograph name: the folder-project key, or for a session the file's path relative to the project file's folder when inside it, else absolute.
+        func rawName(_ key: String) -> String {
+            guard km.sessionID(ofKey: key) != nil else { return key }
+            let u = km.url(forKey: key).standardizedFileURL.path, r = root.standardizedFileURL.path
+            return u.hasPrefix(r + "/") ? String(u.dropFirst(r.count + 1)) : u
+        }
         let rootPath = root.standardizedFileURL.path, outPath = outDir.standardizedFileURL.path
         let prefix = options.coordPrefix ?? (outPath.hasPrefix(rootPath + "/") ? String(outPath.dropFirst(rootPath.count + 1)) : outPath)
 
@@ -344,12 +379,13 @@ enum PickExporter {
         var order: [String] = []
         for (key, rec) in project.mics.sorted(by: { $0.key < $1.key }) {
             if options.onlyDone && !rec.done { continue }
+            if let ids = options.sessionIDs, km.isSessions, !(effSession(key, rec).map(ids.contains) ?? false) { continue }
             let picks = rec.picks.filter { $0.status == .accepted && exportedIDs.contains($0.label) && !(options.excludeMaybe && $0.isMaybe) }
             if picks.isEmpty { continue }
             sum.micrographs += 1
-            let ds = dataset(for: key, rootName: rootName), mid = PickImporter.stem(key)
+            let ds = dataset(for: key, rootName: rootName, sessions: project.sessions, effective: effSession(key, rec), splitSessions: split), mid = PickImporter.stem(key)
             for (i, p) in picks.enumerated() {
-                rows.append(Row(ds: ds, mid: mid, raw: key, angpix: rec.angpix, n: i + 1, p: p))
+                rows.append(Row(ds: ds, mid: mid, raw: rawName(key), angpix: rec.angpix, n: i + 1, p: p))
                 let k = "\(ds)/\(p.label)/\(mid)"
                 if perFile[k] == nil { order.append(k); lists["\(ds)/\(p.label)", default: []].append((key, mid)) }
                 perFile[k, default: []].append((p.x, p.y))
@@ -370,7 +406,7 @@ enum PickExporter {
             for (dl, mics) in lists.sorted(by: { $0.key < $1.key }) {
                 let parts = dl.split(separator: "/", maxSplits: 1).map(String.init), ds = parts[0], label = parts[1]
                 var t = "\ndata_coordinate_files\n\nloop_\n_rlnMicrographName #1\n_rlnMicrographCoordinates #2\n"
-                for (key, mid) in mics { t += "\(key) \(prefix)/\(ds)/\(label)/\(mid).star\n" }
+                for (key, mid) in mics { t += "\(rawName(key)) \(prefix)/\(ds)/\(label)/\(mid).star\n" }
                 try write(t, "\(ds)/coords_list_\(label).star")
             }
         }
@@ -391,16 +427,20 @@ enum PickExporter {
     }
 }
 
-/// `Thon --export-picks <project folder> <out dir> [--eman] [--no-csv] [--done]`
+/// `Thon --export-picks <project folder | file.thon> <out dir> [--eman] [--no-csv] [--done] [--exclude-maybe] [--session <id>]…`
 func runExportCLI(_ args: [String]) -> Int32 {
     guard let i = args.firstIndex(of: "--export-picks"), args.count > i + 2 else { print("usage: --export-picks PROJECT_DIR OUT_DIR [--eman] [--no-csv] [--done]"); return 2 }
-    let root = URL(fileURLWithPath: args[i + 1]), out = URL(fileURLWithPath: args[i + 2])
+    let given = URL(fileURLWithPath: args[i + 1]), out = URL(fileURLWithPath: args[i + 2])
+    let isFile = given.pathExtension.lowercased() == PickStore.projectExtension
+    let root = isFile ? given.deletingLastPathComponent() : given
     do {
-        let proj = try PickStore.decode(Data(contentsOf: root.appendingPathComponent(PickStore.fileName)))
+        let proj = try PickStore.decode(Data(contentsOf: isFile ? given : root.appendingPathComponent(PickStore.fileName)))
         var o = ExportOptions()
         if args.contains("--eman") { o.formats.insert(.eman) }
         if args.contains("--no-csv") { o.formats.remove(.csv) }
         o.onlyDone = args.contains("--done"); o.excludeMaybe = args.contains("--exclude-maybe")
+        let sess = args.enumerated().filter { $0.element == "--session" && $0.offset + 1 < args.count }.map { args[$0.offset + 1] }
+        if !sess.isEmpty { o.sessionIDs = Set(sess) }
         let s = try PickExporter.export(project: proj, root: root, outDir: out, options: o)
         print("exported \(s.total) picks from \(s.micrographs) micrographs, \(s.files) files -> \(out.path)")
         return 0

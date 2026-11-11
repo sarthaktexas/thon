@@ -34,6 +34,7 @@ final class PickController: ObservableObject {
     @Published var autoBusy = false
     @Published var autoMessage: String?
     @Published var externalCommand = ""
+    @Published var engine = PickEngine.builtin
     @Published var maxScore: Float = 10              // upper end of the score-cutoff slider (from the last run)
     var pixels: [Float] = []                          // raw pixels of the current micrograph
     var currentURL: URL?
@@ -223,18 +224,39 @@ final class PickController: ObservableObject {
 
     /// Runs `externalCommand` (prints JSON coordinates) for the current micrograph.
     func runExternalPicker() {
-        guard let k = currentKey, let url = currentURL, !externalCommand.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        let cmd = externalCommand, ap = pixelSizeA, gen = imageGeneration
+        launchExternal(command: externalCommand, name: "External picks", label: "External picker", timeout: 600, environment: [:])
+    }
+
+    /// The Find particles button: the built-in picker, or Topaz / CryoSegNet through their bundled scripts.
+    func runFind(config: EngineConfig = EngineSettings.shared.config) {
+        guard engine != .builtin else { runAutoPick(); return }
+        let cfg = config
+        let problems = EngineCommand.problems(engine, cfg)
+        if let first = problems.first { autoMessage = "\(engine.rawValue): \(first)"; return }
+        guard let url = currentURL, ["mrc", "mrcs"].contains(url.pathExtension.lowercased()) else {
+            autoMessage = "\(engine.rawValue) reads MRC files; this micrograph is not one. Use the built-in picker, or export it as MRC."; return
+        }
+        let diamPx = store.project.params.diameterNm * 10 / effectiveAngpix
+        guard let cmd = EngineCommand.command(engine, cfg, diameterPx: diamPx, brightParticles: autoParams.bright) else { return }
+        let t = String(format: "%d", max(1, cfg.threads))
+        autoMessage = "Running \(engine.rawValue); this can take a minute or more on a CPU…"
+        launchExternal(command: cmd, name: engine.rawValue, label: engine.rawValue, timeout: 1800,
+                       environment: ["OMP_NUM_THREADS": t, "MKL_NUM_THREADS": t, "PYTHONDONTWRITEBYTECODE": "1"])
+    }
+
+    private func launchExternal(command: String, name: String, label: String, timeout: TimeInterval, environment: [String: String]) {
+        guard let k = currentKey, let url = currentURL, !command.trimmingCharacters(in: .whitespaces).isEmpty, !autoBusy else { return }
+        let cmd = command, ap = pixelSizeA, gen = imageGeneration
         autoBusy = true
         autoQueue.async { [weak self] in
-            let res = Result { try ExternalPicker.run(template: cmd, micrograph: url, angpix: ap) }
+            let res = Result { try ExternalPicker.run(template: cmd, micrograph: url, angpix: ap, timeout: timeout, environment: environment) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.autoBusy = false
                 guard gen == self.imageGeneration, self.currentKey == k else { return }
                 switch res {
-                case .success(let c): self.installCandidates(k, c, name: "External picks", params: nil)
-                case .failure(let e): self.autoMessage = "External picker: \(e.localizedDescription)"
+                case .success(let c): self.installCandidates(k, c, name: name, params: nil)
+                case .failure(let e): self.autoMessage = "\(label): \(e.localizedDescription)"
                 }
             }
         }
@@ -286,6 +308,8 @@ final class PickController: ObservableObject {
     @Published var classTolerance = 4.0
     lazy var gallery = GalleryModel(pc: self)
     lazy var swipe = SwipeSession(pc: self)
+    lazy var sort = SortSession(pc: self)
+    lazy var grid = GridSession(pc: self)
     private var classStar: URL?
 
     func loadClasses(star: URL, tolerancePx: Double? = nil) {
@@ -334,15 +358,21 @@ final class PickController: ObservableObject {
     @Published var exportFormats: Set<ExportFormat> = [.relion, .csv]
     @Published var exportOnlyDone = false
     @Published var exportExcludeMaybe = false
+    @Published var exportSessionID: String?             // nil = every session (merged export, one dataset folder per session)
     @Published var ioMessage: String?
 
-    var defaultExportFolder: URL? { store.root?.appendingPathComponent("picks_export") }
+    var defaultExportFolder: URL? {
+        guard let root = store.root else { return nil }
+        if store.isProjectFile, let u = store.projectURL { return root.appendingPathComponent(u.deletingPathExtension().lastPathComponent + "_picks_export") }
+        return root.appendingPathComponent("picks_export")
+    }
 
     @discardableResult
     func exportPicks(to folder: URL) -> ExportSummary? {
         guard let root = store.root else { return nil }
         store.save()
         var o = ExportOptions(); o.formats = exportFormats; o.onlyDone = exportOnlyDone; o.excludeMaybe = exportExcludeMaybe
+        if let id = exportSessionID, store.project.sessions.contains(where: { $0.id == id }) { o.sessionIDs = [id] }
         do {
             let s = try PickExporter.export(project: store.project, root: root, outDir: folder, options: o)
             let per = store.scheme.labels.compactMap { l in s.totals[l.id].map { "\(l.name) \($0)" } }.joined(separator: ", ")

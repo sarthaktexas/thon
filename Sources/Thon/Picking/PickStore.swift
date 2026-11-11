@@ -77,8 +77,12 @@ final class PickStore: ObservableObject {
     @Published private(set) var lastSaved: Date?
     @Published var lastError: String?
 
-    private(set) var root: URL?                            // project folder
+    private(set) var root: URL?                            // project folder (for a .thon project: the folder containing the file)
     private(set) var projectURL: URL?
+    private(set) var keyMap = PickKeyMap(root: nil)         // micrograph file <-> key (session aware)
+    static let projectExtension = "thon"
+    var isProjectFile: Bool { projectURL?.pathExtension.lowercased() == Self.projectExtension }
+    var projectTitle: String { project.name ?? projectURL?.deletingPathExtension().lastPathComponent ?? "" }
     private var undoStacks: [String: [PickEdit]] = [:]
     private var redoStacks: [String: [PickEdit]] = [:]
     private var gridCache: [String: (rev: Int, grid: PickGrid)] = [:]
@@ -105,6 +109,7 @@ final class PickStore: ObservableObject {
         flush()
         root = folder
         projectURL = folder.appendingPathComponent(Self.fileName)
+        keyMap = PickKeyMap(root: folder)
         undoStacks = [:]; redoStacks = [:]; gridCache = [:]; micRev = [:]
         lastBackup = nil
         var ok = true
@@ -122,18 +127,181 @@ final class PickStore: ObservableObject {
         return ok
     }
 
+    /// Opens a `.thon` project file (picks, label scheme and sessions all live in it). A missing file starts an empty project there.
+    @discardableResult
+    func openProject(file: URL) -> Bool {
+        flush()
+        root = file.deletingLastPathComponent()
+        projectURL = file
+        undoStacks = [:]; redoStacks = [:]; gridCache = [:]; micRev = [:]
+        lastBackup = nil
+        var ok = true
+        if FileManager.default.fileExists(atPath: file.path) {
+            do { project = try Self.decode(Data(contentsOf: file)) }
+            catch { lastError = "Could not read \(file.lastPathComponent): \(error.localizedDescription)"; project = PickProject(); ok = false }
+        } else {
+            project = PickProject()
+        }
+        rebuildKeyMap()
+        dirty = false; revision += 1
+        return ok
+    }
+
+    /// Creates a new `.thon` project at `file` with one session per folder (named after the folder) and saves it.
+    @discardableResult
+    func createProject(file: URL, name: String? = nil, folders: [URL]) -> Bool {
+        flush()
+        root = file.deletingLastPathComponent()
+        projectURL = file
+        undoStacks = [:]; redoStacks = [:]; gridCache = [:]; micRev = [:]
+        lastBackup = nil
+        project = PickProject()
+        project.name = name ?? file.deletingPathExtension().lastPathComponent
+        for f in folders { appendSession(folder: f, name: nil) }
+        rebuildKeyMap()
+        dirty = true; revision += 1
+        return save()
+    }
+
+    private func rebuildKeyMap() { keyMap = PickKeyMap(root: root, sessions: project.sessions) }
+    /// Value snapshot for background work (gallery rendering).
+    func keyResolver() -> PickKeyMap { keyMap }
+    func url(forKey key: String) -> URL { keyMap.url(forKey: key) }
+
+    // MARK: sessions
+
+    @discardableResult
+    private func appendSession(folder: URL, name: String?) -> PickSession {
+        let nm = name ?? folder.lastPathComponent
+        let id = PickSession.makeID(from: nm, taken: Set(project.sessions.map { $0.id }))
+        let rel = root.map { PathUtil.relative(from: $0, to: folder) } ?? folder.path
+        let s = PickSession(id: id, name: nm, folder: rel, absFolder: folder.standardizedFileURL.path)
+        project.sessions.append(s)
+        return s
+    }
+
+    /// Adds a session for `folder`. Returns nil (and sets `lastError`) if the folder is already a session or lies inside / contains one.
+    @discardableResult
+    func addSession(folder: URL, name: String? = nil) -> PickSession? {
+        guard isProjectFile else { lastError = "Open or create a .thon project first."; return nil }
+        let fp = folder.standardizedFileURL.path
+        for r in keyMap.roots {
+            let rp = r.url.path
+            if fp == rp || fp.hasPrefix(rp + "/") || rp.hasPrefix(fp + "/") {
+                lastError = "\(folder.lastPathComponent) overlaps the session folder \(rp)."; return nil
+            }
+        }
+        let s = appendSession(folder: folder, name: name)
+        rebuildKeyMap(); touch(nil)
+        return s
+    }
+
+    func setProjectName(_ n: String) {
+        let v = n.isEmpty ? nil : n
+        guard v != project.name else { return }
+        project.name = v; touch(nil)
+    }
+
+    func updateSession(_ s: PickSession) {
+        guard let i = project.sessions.firstIndex(where: { $0.id == s.id }), project.sessions[i] != s else { return }
+        project.sessions[i] = s; touch(nil)
+    }
+
+    /// Points the session at another folder (its picks stay attached: keys use the session id, not the path).
+    func relocateSession(id: String, folder: URL) {
+        guard let i = project.sessions.firstIndex(where: { $0.id == id }), let root else { return }
+        project.sessions[i].folder = PathUtil.relative(from: root, to: folder)
+        project.sessions[i].absFolder = folder.standardizedFileURL.path
+        rebuildKeyMap(); touch(nil)
+    }
+
+    func moveSession(from: Int, to: Int) {
+        guard project.sessions.indices.contains(from), to >= 0, to < project.sessions.count, from != to else { return }
+        let s = project.sessions.remove(at: from); project.sessions.insert(s, at: to); touch(nil)
+    }
+
+    /// Removes the session and every micrograph record (picks, notes) under it. A backup is written first when picks are lost.
+    @discardableResult
+    func removeSession(id: String) -> Int {
+        guard project.sessions.contains(where: { $0.id == id }) else { return 0 }
+        let lost = originStats(id).picks
+        if lost > 0 || project.mics.values.contains(where: { $0.session == id }), projectURL != nil { save(forceBackup: true) }
+        // micrographs that were moved INTO this session from another one go back to their own session
+        for (k, r) in project.mics where r.session == id && !k.hasPrefix(id + "/") {
+            var r2 = r; r2.session = nil
+            if r2 == MicRecord() { project.mics[k] = nil } else { project.mics[k] = r2 }
+        }
+        project.mics = project.mics.filter { !$0.key.hasPrefix(id + "/") }
+        project.sessions.removeAll { $0.id == id }
+        undoStacks = [:]; redoStacks = [:]; gridCache = [:]
+        rebuildKeyMap(); touch(nil)
+        return lost
+    }
+
+    /// Session a micrograph is listed / exported under: the one it was moved to, else the session whose folder holds the file.
+    func effectiveSessionID(_ key: String) -> String? {
+        if let s = project.mics[key]?.session, project.sessions.contains(where: { $0.id == s }) { return s }
+        return keyMap.sessionID(ofKey: key)
+    }
+    /// Session whose folder holds the file (what the key is built from).
+    func originSessionID(_ key: String) -> String? { keyMap.sessionID(ofKey: key) }
+    func session(forKey key: String) -> PickSession? {
+        effectiveSessionID(key).flatMap { id in project.sessions.first { $0.id == id } }
+    }
+
+    /// Moves micrographs to session `id` (nil = back to the session whose folder holds them). Only the organization changes:
+    /// files stay where they are and picks stay attached. Returns how many micrographs changed.
+    @discardableResult
+    func moveMicrographs(_ keys: [String], to id: String?) -> Int {
+        guard isProjectFile, id == nil || project.sessions.contains(where: { $0.id == id }) else { return 0 }
+        var n = 0
+        for k in Set(keys) {
+            let target = (id == keyMap.sessionID(ofKey: k)) ? nil : id
+            if project.mics[k]?.session == target { continue }          // already there
+            var r = project.mics[k] ?? MicRecord()
+            r.session = target
+            if r == MicRecord() { project.mics[k] = nil } else { project.mics[k] = r }
+            n += 1
+        }
+        if n > 0 { touch(nil) }
+        return n
+    }
+    func sessionFolder(_ id: String) -> URL? { keyMap.roots.first { $0.id == id }?.url }
+    func sessionFolderExists(_ id: String) -> Bool { sessionFolder(id).map { PathUtil.isDirectory($0) } ?? false }
+
+    struct SessionStats: Equatable { var micrographs = 0, picks = 0, candidates = 0, maybe = 0, done = 0 }
+    /// Counts over the micrographs currently in the session that have a record (picks = accepted picks).
+    func sessionStats(_ id: String) -> SessionStats {
+        var st = SessionStats()
+        for (k, r) in project.mics where effectiveSessionID(k) == id {
+            tally(&st, r)
+        }
+        return st
+    }
+    /// Same counts over the records of files that live in the session's folder, wherever they were moved to (what removing the session deletes).
+    func originStats(_ id: String) -> SessionStats {
+        var st = SessionStats()
+        for (k, r) in project.mics where k.hasPrefix(id + "/") { tally(&st, r) }
+        return st
+    }
+    private func tally(_ st: inout SessionStats, _ r: MicRecord) {
+        st.micrographs += 1
+        if r.done { st.done += 1 }
+        for p in r.picks {
+            if p.status == .accepted { st.picks += 1; if p.isMaybe { st.maybe += 1 } }
+            else if p.status == .candidate { st.candidates += 1 }
+        }
+    }
+
     static func decode(_ d: Data) throws -> PickProject { try JSONDecoder().decode(PickProject.self, from: d) }
     func encoded() throws -> Data {
         let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try e.encode(project)
     }
 
-    /// Key of a micrograph: path relative to the project folder (forward slashes), else the absolute path.
-    func key(for url: URL) -> String {
-        guard let root else { return url.path }
-        let r = root.standardizedFileURL.path, p = url.standardizedFileURL.path
-        return p.hasPrefix(r + "/") ? String(p.dropFirst(r.count + 1)) : p
-    }
+    /// Key of a micrograph: path relative to the project folder (forward slashes), else the absolute path;
+    /// in a .thon project "<session id>/<path inside the session folder>".
+    func key(for url: URL) -> String { keyMap.key(for: url) }
 
     /// Test hook: replace the scheme without touching picks.
     func setScheme_forTest(_ s: LabelScheme) { project.scheme = s }
@@ -363,16 +531,22 @@ final class PickStore: ObservableObject {
     }
     func flush() { if dirty { save() } }
 
+    /// Folder projects: <folder>/backups; .thon projects: <folder>/<name>_backups (several projects can share a folder).
+    func backupDirectory(root: URL) -> URL {
+        isProjectFile ? root.appendingPathComponent((projectURL!.deletingPathExtension().lastPathComponent) + "_backups") : root.appendingPathComponent("backups")
+    }
+
     private func writeBackup(_ data: Data) {
         guard let root else { return }
-        let dir = root.appendingPathComponent("backups")
+        let dir = backupDirectory(root: root)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let f = DateFormatter(); f.dateFormat = "yyyyMMdd_HHmmss_SSS"; f.locale = Locale(identifier: "en_US_POSIX")
-        let name = "picks_project_\(f.string(from: Date())).json"
+        let (prefix, ext) = isProjectFile ? (projectURL!.deletingPathExtension().lastPathComponent + "_", Self.projectExtension) : ("picks_project_", "json")
+        let name = "\(prefix)\(f.string(from: Date())).\(ext)"       // a .thon backup is itself an openable project file
         try? writeFileAtomically(data, to: dir.appendingPathComponent(name))
         lastBackup = Date()
         let files = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
-            .filter { $0.hasPrefix("picks_project_") && $0.hasSuffix(".json") }.sorted()
+            .filter { $0.hasPrefix(prefix) && $0.hasSuffix("." + ext) }.sorted()
         if files.count > backupsToKeep {
             for old in files.prefix(files.count - backupsToKeep) { try? FileManager.default.removeItem(at: dir.appendingPathComponent(old)) }
         }
