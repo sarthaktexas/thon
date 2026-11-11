@@ -113,7 +113,6 @@ func testPhone(_ t: inout TestRun) {
     if let second = c.swipe.queue.dropFirst().first { t.check(req("GET", "/api/card/\(k)@\(second.id).jpg").deferred != nil, "upcoming cards can be rendered ahead") }
 
     // --- decisions
-    let picksBefore = c.store.picks(k).count
     c.swipe.decoyRate = 0; c.swipe.rebuild()
     let a = c.swipe.current!
     let ref = "\(k)@\(a.id)"

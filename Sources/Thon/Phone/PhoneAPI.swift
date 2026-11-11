@@ -13,7 +13,9 @@ protocol PhoneHost: AnyObject {
     func phoneOpenMic(at i: Int)
 }
 
-extension AppModel: PhoneHost {
+// `AppModel` is @MainActor and `PhoneAPI` only ever calls the host on the main thread (see PhoneAPI's doc comment),
+// so the conformance is `@preconcurrency`: the compiler inserts a main-actor check at runtime instead of a static error.
+extension AppModel: @preconcurrency PhoneHost {
     var pc: PickController { picks }
     var phoneIsLoading: Bool { isLoading }
     var phoneMicCount: Int { items.count }

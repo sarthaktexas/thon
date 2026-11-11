@@ -1155,7 +1155,8 @@ func testSessions(_ t: inout TestRun) {
         return u
     }
     // three sessions, same micrograph names in each
-    let a1 = touch("data/c1ql3 grid1/Mics/mic_0001.mrc"), a2 = touch("data/c1ql3 grid1/Mics/mic_0002.mrc")
+    let a1 = touch("data/c1ql3 grid1/Mics/mic_0001.mrc")
+    _ = touch("data/c1ql3 grid1/Mics/mic_0002.mrc")
     let b1 = touch("data/grid2/mic_0001.mrc")
     let c1 = touch("other drive/grid3/mic_0001.mrc")
     let folders = [a1.deletingLastPathComponent().deletingLastPathComponent(), b1.deletingLastPathComponent(), c1.deletingLastPathComponent()]
