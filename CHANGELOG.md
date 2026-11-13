@@ -1,5 +1,8 @@
 # Changelog
 
+## Hold Space to hide overlays
+* **Hold Space over the image** to hide everything drawn on it (picks and their boxes, rulers, header, scale bar, readout) and see the bare micrograph; release to bring it all back. While Space is held, clicks only pan, so nothing invisible is picked or measured. It also releases if the window loses focus. Space is not a label hotkey, so it cannot clash with a label scheme (`OverlayPeek` in `OverlayPeek.swift`). Not seen on screen: compile and `--picktest` only.
+
 ## Fewer files in the project folder
 * **Backups are hidden**: `.<name>_backups/` for `.thon` projects, `.backups/` for folder projects (Finder: ⇧⌘. shows them). Backups from older versions are moved there on the next backup (only files with the project's own prefix; the old folder is removed once empty).
 * **The swipe assistant's samples live inside the `.thon` file** (hand features only, one compact blob; Core ML embeddings are not stored and are recomputed when switched on). A `<name>.assist.json` from an older version is imported once if the project has no samples yet and is no longer written; it can be deleted. A reset is stored as an empty list so the old file does not come back.

@@ -7,6 +7,9 @@ final class InteractiveMTKView: MTKView {
     var state: ViewState!
     var cursor: CursorState!
     var onKey: ((NSEvent) -> Bool)?
+    var onPeek: ((Bool) -> Void)?           // Space held / released: hide / show the overlays
+    private(set) var peeking = false
+    private var resignObserver: NSObjectProtocol?
     var picker: PickController?
     var measure: MeasureState?
     private var measureDown = false         // a ruler gesture (not an Option-pan) is in progress
@@ -45,12 +48,12 @@ final class InteractiveMTKView: MTKView {
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         // Ruler: drag to measure; hold Option to pan instead.
-        if let m = measure, m.enabled, !event.modifierFlags.contains(.option) {
+        if !peeking, let m = measure, m.enabled, !event.modifierFlags.contains(.option) {
             measureDown = true
             m.mouseDown(at: imagePoint(pixelPoint(event)), radiusPx: hitRadiusPx)
             return
         }
-        if let p = picker, p.enabled {
+        if !peeking, let p = picker, p.enabled {
             pickDown = convert(event.locationInWindow, from: nil)
             p.mouseDown(at: pickPoint(event), radiusPx: hitRadiusPx, shift: event.modifierFlags.contains(.shift))
             return
@@ -85,8 +88,8 @@ final class InteractiveMTKView: MTKView {
         pickDown = nil
     }
     override func rightMouseDown(with event: NSEvent) {
-        if let m = measure, m.enabled { m.rightClick(at: imagePoint(pixelPoint(event)), radiusPx: hitRadiusPx); return }
-        if let p = picker, p.enabled { p.rightClick(at: pickPoint(event), radiusPx: hitRadiusPx) }
+        if !peeking, let m = measure, m.enabled { m.rightClick(at: imagePoint(pixelPoint(event)), radiusPx: hitRadiusPx); return }
+        if !peeking, let p = picker, p.enabled { p.rightClick(at: pickPoint(event), radiusPx: hitRadiusPx) }
         else { super.rightMouseDown(with: event) }
     }
     override func resetCursorRects() {
@@ -110,8 +113,35 @@ final class InteractiveMTKView: MTKView {
         state.setZoom(state.zoom * (1 + Double(event.magnification)), about: pixelPoint(event))
     }
     override func keyDown(with event: NSEvent) {
+        if OverlayPeek.isPeekKey(keyCode: event.keyCode, modifiers: event.modifierFlags) {
+            setPeeking(true)                 // key repeat just re-asserts it
+            return
+        }
         if onKey?(event) != true { super.keyDown(with: event) }
     }
+    override func keyUp(with event: NSEvent) {
+        if event.keyCode == OverlayPeek.keyCode { setPeeking(false) } else { super.keyUp(with: event) }
+    }
+
+    private func setPeeking(_ on: Bool) {
+        guard on != peeking else { return }
+        peeking = on
+        onPeek?(on)
+    }
+    /// A key-up that arrives while another window or app has the focus never reaches the view, so release on focus loss.
+    override func resignFirstResponder() -> Bool {
+        setPeeking(false)
+        return super.resignFirstResponder()
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let o = resignObserver { NotificationCenter.default.removeObserver(o); resignObserver = nil }
+        guard let w = window else { setPeeking(false); return }
+        resignObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: w, queue: .main) { [weak self] _ in
+            self?.setPeeking(false)
+        }
+    }
+    deinit { if let o = resignObserver { NotificationCenter.default.removeObserver(o) } }
 }
 
 struct MicrographView: NSViewRepresentable {
@@ -128,6 +158,7 @@ struct MicrographView: NSViewRepresentable {
         v.state = model.view
         v.cursor = model.cursor
         v.onKey = { [weak model] e in model?.handleKey(e) ?? false }
+        v.onPeek = { [weak model] on in model?.overlaysHidden = on }
         v.picker = model.picks
         v.measure = model.measure
         context.coordinator.attach(v)

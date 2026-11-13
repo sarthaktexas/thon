@@ -99,6 +99,8 @@ final class AppModel: ObservableObject {
     @Published var tagQuery = ""
     @Published var inspectorTab: InspectorTab = .overview
     @Published var showGallery = false
+    /// True while Space is held over the image: every overlay is hidden and clicks only pan.
+    @Published var overlaysHidden = false
     @Published var showSwipe = false
     @Published var showCrops = false
     @Published var showSessions = false

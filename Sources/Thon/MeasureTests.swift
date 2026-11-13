@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import AppKit
 
 /// Headless checks for the measure tool and the nm / Å display switch (`Thon --picktest`).
 func testMeasureAndUnits(_ t: inout TestRun) {
@@ -62,4 +63,8 @@ func testMeasureAndUnits(_ t: inout TestRun) {
     m.rightClick(at: CGPoint(x: 25, y: 2), radiusPx: 5)
     t.check(m.lines.isEmpty, "right-click removes the line under the cursor")
     t.check(m.handleKey(keyCode: 53) && !m.enabled, "escape with no selection leaves the tool")
+
+    // hold-Space peek key
+    t.check(OverlayPeek.isPeekKey(keyCode: 49, modifiers: []) && OverlayPeek.isPeekKey(keyCode: 49, modifiers: [.shift]), "Space (with or without Shift) is the peek key")
+    t.check(!OverlayPeek.isPeekKey(keyCode: 49, modifiers: [.command]) && !OverlayPeek.isPeekKey(keyCode: 49, modifiers: [.option]) && !OverlayPeek.isPeekKey(keyCode: 0, modifiers: []), "other keys and Command/Option+Space are not")
 }

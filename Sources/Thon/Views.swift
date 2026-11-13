@@ -242,15 +242,17 @@ struct ImagePane: View {
         ZStack {
             MicrographView(model: model)
             PickOverlay(pc: model.picks, vs: model.view, store: model.picks.store)
+                .opacity(model.overlaysHidden ? 0 : 1)
             MeasureOverlay(measure: model.measure, vs: model.view, pixelSizeA: model.doc?.entry.pixelSizeA)
+                .opacity(model.overlaysHidden ? 0 : 1)
             if model.doc == nil && !model.isLoading {
                 Text("No image loaded").foregroundStyle(.secondary)
             }
             if model.isLoading { ProgressView().controlSize(.large) }
         }
-        .overlay(alignment: .topLeading) { HeaderOverlay(model: model).padding(10) }
-        .overlay(alignment: .bottomLeading) { ScaleBar(vs: model.view, pixelSizeA: model.doc?.entry.pixelSizeA).padding(14) }
-        .overlay(alignment: .bottomTrailing) { Readout(cursor: model.cursor, vs: model.view, model: model).padding(10) }
+        .overlay(alignment: .topLeading) { HeaderOverlay(model: model).padding(10).opacity(model.overlaysHidden ? 0 : 1) }
+        .overlay(alignment: .bottomLeading) { ScaleBar(vs: model.view, pixelSizeA: model.doc?.entry.pixelSizeA).padding(14).opacity(model.overlaysHidden ? 0 : 1) }
+        .overlay(alignment: .bottomTrailing) { Readout(cursor: model.cursor, vs: model.view, model: model).padding(10).opacity(model.overlaysHidden ? 0 : 1) }
         .background(Color(red: 0.075, green: 0.078, blue: 0.086))
     }
 }
