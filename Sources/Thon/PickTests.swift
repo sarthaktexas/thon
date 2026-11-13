@@ -32,6 +32,7 @@ func runPickTests(_ args: [String]) -> Int32 {
     testAutoPrimitives(&t)
     testAutoPicker(&t)
     testAutoIntegration(&t)
+    testStacksAndSweep(&t)
     testExternalPicker(&t)
     testEngines(&t)
     testAssist(&t)
@@ -795,9 +796,28 @@ func testEngines(_ t: inout TestRun) {
 
     // controller: engines refuse cleanly instead of running when not ready or on non-MRC files
     let pc = PickController()
+    let enabledSuite = "thon.test.engines.on.\(UUID().uuidString)"
+    let enabledDefaults = UserDefaults(suiteName: enabledSuite)!
+    defer { enabledDefaults.removePersistentDomain(forName: enabledSuite) }
+    pc.engineSettings = EngineSettings(defaults: enabledDefaults); pc.engineSettings.enabled = true      // engines are off unless switched on in Preferences
     pc.engine = .cryosegnet
     pc.runFind(config: EngineConfig())
     t.check(pc.autoMessage?.hasPrefix("CryoSegNet:") == true && !pc.autoBusy, "runFind explains what is missing and does not start", pc.autoMessage ?? "nil")
+
+    // --- Preferences: Topaz and CryoSegNet are off until switched on (a throwaway defaults suite, never the user's)
+    let suite = "thon.test.engines.\(UUID().uuidString)"
+    let ud = UserDefaults(suiteName: suite)!
+    defer { ud.removePersistentDomain(forName: suite) }
+    let es = EngineSettings(defaults: ud)
+    t.check(!es.enabled, "the Python engines are off by default")
+    let pcE = PickController(); pcE.engineSettings = es
+    pcE.engine = .topaz
+    t.check(pcE.effectiveEngine == .builtin, "with the engines off, a stored Topaz choice still runs the built-in picker")
+    es.enabled = true
+    t.check(pcE.effectiveEngine == .topaz, "switched on in Preferences, the chosen engine runs")
+    t.check(EngineSettings(defaults: ud).enabled, "the preference is remembered")
+    es.enabled = false
+    t.check(!EngineSettings(defaults: ud).enabled && pcE.effectiveEngine == .builtin, "and switching it off is remembered too")
 }
 
 // MARK: import / export

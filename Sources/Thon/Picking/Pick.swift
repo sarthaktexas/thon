@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 enum PickSource: String, Codable { case manual, auto }
 
@@ -16,13 +17,14 @@ struct Pick: Codable, Identifiable, Equatable {
     var source: PickSource
     var status: PickStatus
     var diameterNm: Double?          // overrides the project default when set
+    var boxNm: Double?               // extraction box (nm); overrides the project default when set (size sweeps give each pick its own)
     var maybe: Bool?                 // optional "not sure" flag, independent of the label (nil = not flagged)
     var isMaybe: Bool { maybe == true }
 
     init(id: String = Pick.newID(), x: Double, y: Double, label: String, score: Float? = nil,
-         source: PickSource = .manual, status: PickStatus = .accepted, diameterNm: Double? = nil, maybe: Bool? = nil) {
+         source: PickSource = .manual, status: PickStatus = .accepted, diameterNm: Double? = nil, maybe: Bool? = nil, boxNm: Double? = nil) {
         self.id = id; self.x = x; self.y = y; self.label = label; self.score = score
-        self.source = source; self.status = status; self.diameterNm = diameterNm; self.maybe = maybe
+        self.source = source; self.status = status; self.diameterNm = diameterNm; self.maybe = maybe; self.boxNm = boxNm
     }
 
     init(from d: Decoder) throws {
@@ -34,6 +36,7 @@ struct Pick: Codable, Identifiable, Equatable {
         source = try c.decodeIfPresent(PickSource.self, forKey: .source) ?? .manual
         status = try c.decodeIfPresent(PickStatus.self, forKey: .status) ?? .accepted
         diameterNm = try c.decodeIfPresent(Double.self, forKey: .diameterNm)
+        boxNm = try c.decodeIfPresent(Double.self, forKey: .boxNm)
         maybe = (try c.decodeIfPresent(Bool.self, forKey: .maybe)) == true ? true : nil
     }
 
@@ -41,6 +44,18 @@ struct Pick: Codable, Identifiable, Equatable {
         let a = Array("0123456789abcdefghijklmnopqrstuvwxyz")
         return String((0..<8).map { _ in a[Int.random(in: 0..<a.count)] })
     }
+}
+
+/// A rectangle of a micrograph you have finished going through (pick coordinates, x0 < x1, y0 < y1).
+/// The crop editor marks one for every confirmed section, or for a region you drag over; the viewer tints them.
+struct DoneRegion: Codable, Equatable, Identifiable {
+    var id: String
+    var x0: Double, y0: Double, x1: Double, y1: Double
+    init(id: String = Pick.newID(), x0: Double, y0: Double, x1: Double, y1: Double) {
+        self.id = id; self.x0 = min(x0, x1); self.y0 = min(y0, y1); self.x1 = max(x0, x1); self.y1 = max(y0, y1)
+    }
+    var rect: CGRect { CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0) }
+    func contains(x: Double, y: Double) -> Bool { x >= x0 && x <= x1 && y >= y0 && y <= y1 }
 }
 
 /// Per-micrograph record in the project file.
@@ -54,6 +69,7 @@ struct MicRecord: Codable, Equatable {
     var angpix: Double?
     var swipe: SwipeLog?             // card-deck review decisions (statistics / audit)
     var session: String?             // .thon projects: session this micrograph is listed / exported under (nil = the session whose folder holds the file)
+    var sections: [DoneRegion]?      // crop editor: parts of the micrograph already gone through (nil = none)
     init() {}
     init(from d: Decoder) throws {   // tolerant: hand-edited / older files may omit fields
         let c = try d.container(keyedBy: CodingKeys.self)
@@ -66,6 +82,7 @@ struct MicRecord: Codable, Equatable {
         angpix = try c.decodeIfPresent(Double.self, forKey: .angpix)
         swipe = try c.decodeIfPresent(SwipeLog.self, forKey: .swipe)
         session = try c.decodeIfPresent(String.self, forKey: .session)
+        sections = try c.decodeIfPresent([DoneRegion].self, forKey: .sections)
     }
 }
 

@@ -14,23 +14,24 @@ struct PickOverlay: View {
     @ObservedObject var pc: PickController
     @ObservedObject var vs: ViewState
     @ObservedObject var store: PickStore
+    @ObservedObject var cs: CropSession
 
     var body: some View {
         Canvas { ctx, size in
             guard pc.showMarkers, pc.currentKey != nil, vs.zoom > 0 else { return }
+            let editing = cs.active ? Set(cs.items.map { $0.id }) : []        // the crop editor draws these itself
             let bs = vs.backingScale == 0 ? 2 : vs.backingScale
             let g = ViewGeometry(zoom: vs.zoom, center: vs.center,
                                  viewPixels: CGSize(width: size.width * bs, height: size.height * bs), backingScale: bs)
             let ppp = g.pointsPerPixel
             let sel = pc.selection
-            let boxPts = pc.boxPx * ppp
             let visibleRect = CGRect(x: -40, y: -40, width: size.width + 80, height: size.height + 80)
             let unsorted = pc.unsortedPickIDs()
-            for p in pc.visiblePicks {
+            for p in pc.visiblePicks where !editing.contains(p.id) {
                 let c = g.pickToView(x: p.x, y: p.y)
                 let r = pc.diameterPx(p) * ppp / 2
                 guard visibleRect.insetBy(dx: -r, dy: -r).contains(c) else { continue }
-                Self.drawPick(&ctx, p, at: c, radius: r, pc: pc, store: store, selected: sel.contains(p.id), boxPts: boxPts, unsorted: unsorted.contains(p.id))
+                Self.drawPick(&ctx, p, at: c, radius: r, pc: pc, store: store, selected: sel.contains(p.id), boxPts: pc.boxPx(p) * ppp, unsorted: unsorted.contains(p.id))
             }
             if let b = pc.boxRect {
                 let a = g.pickToView(x: b.minX, y: b.minY), z = g.pickToView(x: b.maxX, y: b.maxY)

@@ -54,7 +54,7 @@ Your exposures are listed on the left, the image is rendered on the GPU in the m
   <img src="assets/screenshot_picks.png" alt="Picks tab with auto-picked particles marked green and yellow on a micrograph" width="900">
 </p>
 
-Set the particle diameter, press **Find particles**, and candidates appear on the micrograph. The built-in auto-picker needs no setup. Topaz and CryoSegNet are available as optional engines that run in a Python environment you provide. Drag the score threshold to decide how many candidates to show, accept everything above it in one key press, and label picks as good, maybe or reject (or define your own labels). Work from a single micrograph or across a whole folder.
+Set the particle diameter, press **Find particles**, and candidates appear on the micrograph. The built-in auto-picker needs no setup. Topaz and CryoSegNet can be switched on in Settings (⌘,) as optional engines that run in a Python environment you provide. Drag the score threshold to decide how many candidates to show, accept everything above it in one key press, and label picks as good, maybe or reject (or define your own labels). Work from a single micrograph or across a whole folder.
 
 When you are done, export to RELION `.star`, CSV or EMAN. Rejected picks are left out.
 

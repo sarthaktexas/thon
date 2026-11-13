@@ -2,11 +2,13 @@ import Foundation
 import Combine
 import CoreGraphics
 
-// Crop editor: the micrograph is cut into overlapping crops, one is shown at a time with its candidate circles.
-// The user moves, resizes, adds and removes circles and gives each one a type from the project's label scheme (right-click
-// a circle, a label hotkey, or the type list); the circle is drawn in the colour of its type. A double click on a circle
-// removes it (= reject). Next confirms the crop: circles left alone count as confirmed, so every circle in
-// the crop becomes a labelled example for the assistant (Reranker's logistic model and the Core ML classifier).
+// Crop editor, built into the main viewer: the micrograph is cut into overlapping sections and the viewer is taken to one
+// at a time (everything outside it is dimmed). The user moves, resizes, adds and removes circles and gives each one a type
+// from the project's label scheme (a label hotkey, or the type list); the circle is drawn in the colour of its type. A double
+// click or a right click on a circle removes it (= reject). Done confirms the section: circles left alone count as confirmed,
+// so every circle in the section becomes a labelled example for the assistant (Reranker's logistic model and the Core ML
+// classifier). A confirmed section is remembered in the project (`MicRecord.sections`) and tinted in the viewer. A region
+// dragged over ground you already know is finished is confirmed the same way.
 
 final class CropSession: ObservableObject {
     /// Derived from the type, never set on its own: the labels "maybe" and "uncertain" count as maybe (half weight when learning).
@@ -28,9 +30,18 @@ final class CropSession: ObservableObject {
     struct Tile: Equatable, Identifiable { var id: Int; var cx: Double; var cy: Double }
 
     private struct CommitRecord {
-        var tile: Tile; var key: String; var serial: Int?; var logged: Int
-        var sampleIDs: [String]; var fileNames: [String]; var items: [Item]
+        var tile: Tile?; var key: String; var serial: Int?; var logged: Int
+        var sampleIDs: [String]; var fileNames: [String]; var items: [Item]; var section: String
     }
+    /// What the pointer is doing between mouse down and mouse up (see `pointerDown`).
+    private enum Gesture {
+        case none
+        case item(id: String, origin: CGPoint, start: CGPoint, moved: Bool)
+        case empty(start: CGPoint, moved: Bool)
+        case region(start: CGPoint)
+    }
+    /// What the viewer should do with a mouse drag: pan the image, nothing yet, or the crop editor took it.
+    enum DragResult { case pan, none, handled }
 
     unowned let pc: PickController
     var sw: SwipeSession { pc.swipe }
@@ -45,32 +56,40 @@ final class CropSession: ObservableObject {
     @Published var sizeTyping = UserDefaults.standard.bool(forKey: "crop.sizeTyping") { didSet { UserDefaults.standard.set(sizeTyping, forKey: "crop.sizeTyping") } }
     @Published private(set) var sizeTyper: SizeTyper?
     @Published var penNm: Double = 0                         // size of the next circle you add (0 until the project default is read)
-    /// Zoom-out level: the window is `sidePx × 2^zoomLevel` wide (0 = normal, 1 = ×2, 2 = ×4, …), up to `maxZoomLevel`.
-    @Published var zoomLevel = 0 {
+    /// On while the crop editor owns the viewer: the viewer shows one section at a time and a click edits circles.
+    @Published var active = false {
         didSet {
-            guard zoomLevel != oldValue else { return }
-            let c = min(max(zoomLevel, 0), maxZoomLevel)
-            if c != zoomLevel { zoomLevel = c }
-            if zoomLevel != oldValue { revision += 1; addPicksOfWindow() }
+            guard active != oldValue else { return }
+            if active {
+                if !pc.enabled { pc.enabled = true }
+                rebuild()
+            } else {
+                selected = nil; gesture = .none; regionRect = nil; regionTool = false
+                view?.fit()
+            }
         }
     }
-    /// On / off view of the first zoom-out level (×2).
-    var zoomOut: Bool {
-        get { zoomLevel > 0 }
-        set { zoomLevel = newValue ? max(zoomLevel, 1) : 0 }
-    }
+    /// Plain drags mark a region done (instead of panning); Option-drag does the same for one drag.
+    @Published var regionTool = false
+    /// Rubber band of the region being dragged, pick coordinates.
+    @Published private(set) var regionRect: CGRect?
+    /// The viewer this session frames sections in (set by the app model).
+    weak var view: ViewState? { didSet { view?.sectionFrame = { [weak self] in self?.frameTarget() } } }
     @Published var sideDiameters = 5.0 { didSet { if sideDiameters != oldValue { sideDiameters = min(max(sideDiameters, 2), 12); if sideDiameters != oldValue { rebuild() } } } }
     @Published var includeEmpty = false { didSet { if includeEmpty != oldValue { rebuild() } } }
     @Published var order = Order.uncertain { didSet { if order != oldValue { reorder() } } }
     @Published private(set) var revision = 0
-    @Published private(set) var reviewedCount = 0
+    var reviewedCount: Int { max(0, tilesTotal - queue.count) }
     private(set) var shownAt = Date()
+    /// A tile counts as finished when this much of it lies inside confirmed sections.
+    static let doneCoverage = 0.9
 
     private var key: String?
-    private var reviewed: [String: Set<Int>] = [:]            // per micrograph and crop size
+    private var keptTiles: [Tile] = []
+    private var gesture = Gesture.none
+    private var lastClick: (id: String, at: Date)?
     private var editHistory: [[Item]] = []
     private var commits: [CommitRecord] = []
-    private var plate: CardPlate?, plateSig = ""
     private var orderToken = 0
     private let work = DispatchQueue(label: "thon.crops.order", qos: .utility)
     private var bag = Set<AnyCancellable>()
@@ -89,21 +108,38 @@ final class CropSession: ObservableObject {
         let cap = max(1, min(pc.imageSize.width, pc.imageSize.height))
         return min(max(64, sideDiameters * defaultDiameterPx), cap)
     }
-    var windowPx: Double { sidePx * Double(1 << zoomLevel) }
-    /// Highest zoom-out level (×2, ×4, ×8, ×16). Past ×2 it stops once the window would be wider than the micrograph's
-    /// longer side, since the plate is read and denoised at the window's full size.
-    var maxZoomLevel: Int {
-        let big = Double(max(pc.imageSize.width, pc.imageSize.height))
-        var level = 1
-        while level < 4, sidePx * Double(1 << (level + 1)) <= big { level += 1 }
-        return level
-    }
-    var zoomLabel: String { zoomLevel == 0 ? "normal" : "×\(1 << zoomLevel)" }
+    var windowPx: Double { sidePx }
     var current: Tile? { queue.first }
     var done: Bool { queue.isEmpty }
     var remaining: Int { queue.count }
     var canUndo: Bool { !editHistory.isEmpty || !commits.isEmpty }
-    private var reviewKey: String { "\(key ?? "")|\(Int(sidePx))" }
+    /// The section on screen, in pick coordinates.
+    var currentRect: CGRect? { current.map { tileRect($0) } }
+    func tileRect(_ t: Tile) -> CGRect { CGRect(x: t.cx - sidePx / 2, y: t.cy - sidePx / 2, width: sidePx, height: sidePx) }
+    /// Sections already confirmed on the current micrograph.
+    var sections: [DoneRegion] { key.map { pc.store.sections($0) } ?? [] }
+
+    /// Share of `r` (0...1) that lies inside the regions, estimated on a 14 × 14 grid of sample points.
+    static func coverage(of r: CGRect, in regions: [DoneRegion]) -> Double {
+        guard !regions.isEmpty, r.width > 0, r.height > 0 else { return 0 }
+        let n = 14
+        var hit = 0
+        for j in 0..<n { for i in 0..<n {
+            let x = r.minX + (Double(i) + 0.5) / Double(n) * r.width, y = r.minY + (Double(j) + 0.5) / Double(n) * r.height
+            if regions.contains(where: { $0.contains(x: x, y: y) }) { hit += 1 }
+        } }
+        return Double(hit) / Double(n * n)
+    }
+
+    /// Where the viewer should look for the current section (centre in viewer coordinates, drawable pixels per image pixel),
+    /// or nil when the editor is off or nothing is queued.
+    func frameTarget() -> (center: CGPoint, zoom: Double)? {
+        guard active, let t = current, let v = view, v.viewPixels.width > 1 else { return nil }
+        let z = 0.9 * Double(min(v.viewPixels.width, v.viewPixels.height)) / sidePx
+        return (CGPoint(x: t.cx + 0.5, y: t.cy + 0.5), min(max(z, 0.01), 256))
+    }
+    /// Takes the viewer to the current section.
+    func frame() { if let f = frameTarget(), let v = view { v.center = f.center; v.zoom = f.zoom } }
 
     /// Pick-coordinate position of a point at fractions (u, v) of the current crop (origin top-left).
     func point(u: Double, v: Double) -> CGPoint? {
@@ -184,15 +220,35 @@ final class CropSession: ObservableObject {
         rr.use(store: pc.store); classifier.use(project: pc.store.projectURL)
         refreshSizeTyper()
         let all = allTiles()
-        let kept = includeEmpty ? all : all.filter { !picksIn($0, key: k).isEmpty }
-        tilesTotal = kept.count
-        let seen = reviewed[reviewKey] ?? []
-        queue = kept.filter { !seen.contains($0.id) }
-        reviewedCount = kept.count - queue.count
-        editHistory = []; commits = []; zoomOut = false
+        keptTiles = includeEmpty ? all : all.filter { !picksIn($0, key: k).isEmpty }
+        tilesTotal = keptTiles.count
+        let regions = pc.store.sections(k)
+        queue = keptTiles.filter { Self.coverage(of: tileRect($0), in: regions) < Self.doneCoverage }
+        editHistory = []; commits = []; lastClick = nil
         if penNm <= 0 { penNm = defaultDiameterNm }
         loadItems(); reorder(includeFirst: true)
     }
+
+    /// Drops the tiles that confirmed sections now cover. `restoring` tiles (a take-back) go first; the crop on screen stays
+    /// while it holds edits you have not confirmed. Everything else keeps its order.
+    private func requeue(restoring: Tile? = nil) {
+        guard let k = key else { return }
+        let regions = pc.store.sections(k)
+        let oldHead = queue.first
+        let pos = Dictionary(uniqueKeysWithValues: queue.enumerated().map { ($1.id, $0) })
+        var q = keptTiles.filter { t in
+            if t == restoring { return true }
+            if t == oldHead, hasEdits { return true }
+            return Self.coverage(of: tileRect(t), in: regions) < Self.doneCoverage
+        }
+        q.sort { (t, u) in
+            let a = t == restoring ? -2 : (pos[t.id] ?? -1), b = u == restoring ? -2 : (pos[u.id] ?? -1)
+            return a != b ? a < b : t.id < u.id
+        }
+        queue = q
+    }
+    /// True once something on the crop on screen was changed and not yet confirmed.
+    var hasEdits: Bool { items.contains { !$0.untouched || $0.removed || $0.isNew } }
 
     private func loadItems() {
         selected = nil; editHistory = []; items = []
@@ -200,20 +256,12 @@ final class CropSession: ObservableObject {
             items = picksIn(t, window: windowPx, key: k).map { p in var i = Self.item(from: p); i.diameterNm = pc.store.diameterNm(p); return normalized(i) }
         }
         shownAt = Date(); revision += 1; sw.viewChanged()
+        if active { frame() }
     }
 
     static func item(from p: Pick) -> Item {
         Item(id: p.id, x: p.x, y: p.y, diameterNm: p.diameterNm ?? 0, level: (p.isMaybe || isMaybeLabel(p.label)) ? .maybe : .sure, label: p.label,
              isNew: false, untouched: p.status == .candidate, orig: p)
-    }
-
-    /// Zooming out brings picks of the wider window into the list; edits already made are kept.
-    private func addPicksOfWindow() {
-        guard let t = current, let k = key else { return }
-        let have = Set(items.map { $0.id })
-        for p in picksIn(t, window: windowPx, key: k) where !have.contains(p.id) {
-            var i = Self.item(from: p); i.diameterNm = pc.store.diameterNm(p); items.append(normalized(i))
-        }
     }
 
     // MARK: ordering (uncertain first)
@@ -267,20 +315,6 @@ final class CropSession: ObservableObject {
     }
 
     // MARK: image
-
-    func cropImage(out: Int) -> [UInt8]? {
-        guard let t = current, !pc.pixels.isEmpty else { return nil }
-        let d = sw.display
-        let sig = "\(pc.currentKey ?? "")|\(pc.pixels.count)|\(t.id)|\(windowPx)|\(out)|\(d.denoise.rawValue)|\(d.size)|\(d.h)"
-        if sig != plateSig || plate == nil {
-            plate = CardPlate.make(pixels: pc.pixels, width: Int(pc.imageSize.width), height: Int(pc.imageSize.height), cx: t.cx, cy: t.cy,
-                                   boxPx: windowPx, out: out, denoise: d.denoise, size: d.size, h: d.h)
-            plateSig = sig
-        }
-        guard let plate else { return nil }
-        let win = d.window(base: d.tone == .micrograph ? sw.displayWindow() : plate.localWindow())
-        return plate.render(out: out, lo: win.lo, hi: win.hi, gamma: Float(d.gamma), invert: d.invert, nearest: d.pixelated)
-    }
 
     /// Crop 2.5 particle diameters wide around (x, y), resampled to the Core ML input size, for the Core ML classifier.
     static func gray(_ pixels: [Float], _ w: Int, _ h: Int, _ x: Double, _ y: Double, _ dPx: Double, lo: Float, hi: Float) -> [UInt8] {
@@ -375,17 +409,38 @@ final class CropSession: ObservableObject {
 
     // MARK: confirm
 
-    /// Confirms the crop: applies every circle to the picks (one undoable store edit), logs it and teaches the assistant.
+    /// Done: confirms the section on screen (see `confirm`).
     func commit() {
-        guard let k = key ?? pc.currentKey, let t = current else { return }
-        let all = items
+        guard let t = current else { return }
+        confirm(items: items, area: tileRect(t), tile: t, name: "Crop \(reviewedCount + 1)")
+    }
+
+    /// Confirms a region you dragged over ground you know is finished. The circles in it (the ones on screen with your edits,
+    /// and every other pick of the region) are confirmed like those of a section; circles outside it stay as they are.
+    func markRegionDone(_ r: CGRect) {
+        guard let k = key ?? pc.currentKey, r.width >= 8, r.height >= 8 else { return }
+        let bounds = CGRect(x: -0.5, y: -0.5, width: pc.imageSize.width, height: pc.imageSize.height)
+        let box = r.intersection(bounds)
+        guard !box.isNull, box.width >= 8, box.height >= 8 else { return }
+        func inside(_ x: Double, _ y: Double) -> Bool { x >= box.minX && x <= box.maxX && y >= box.minY && y <= box.maxY }
+        var all = items.filter { inside($0.x, $0.y) }
+        let have = Set(items.map { $0.id })
+        for p in pc.store.picks(k) where relevant(p) && inside(p.x, p.y) && !have.contains(p.id) {
+            var i = Self.item(from: p); i.diameterNm = pc.store.diameterNm(p); all.append(normalized(i))
+        }
+        confirm(items: all, area: box, tile: nil, name: "Mark region done")
+    }
+
+    /// Applies every circle to the picks (one undoable store edit), logs it, teaches the assistant and records `area` as a
+    /// confirmed section of the micrograph.
+    private func confirm(items all: [Item], area: CGRect, tile t: Tile?, name: String) {
+        guard let k = key ?? pc.currentKey else { return }
         let defNm = defaultDiameterNm
         func sized(_ d: Double) -> Double? { abs(d - defNm) > 1e-6 ? d : nil }
         if all.contains(where: { !$0.removed && $0.level == .maybe }), !pc.store.project.params.maybeFlag {
             var p = pc.store.project.params; p.maybeFlag = true; pc.store.setParams(p)            // so the yellow ones show as ? and can be left out of an export
         }
-        let n = reviewedCount + 1
-        let changed = pc.store.perform(k, "Crop \(n)") { l in
+        let changed = pc.store.perform(k, name) { l in
             for it in all {
                 let maybe: Bool? = it.level == .maybe ? true : nil
                 if it.isNew {
@@ -412,9 +467,9 @@ final class CropSession: ObservableObject {
             rr.observe(key: k, id: id, decision: yes ? "pick" : "reject", decoy: decoy, hand: hand, embedding: useE ? sw.assistEmbedding(x, y) : nil, weight: weight, fit: false)
             sampleIDs.append(id)
             if picture, weight == nil || weight! >= 1 || !yes {
-                let name = "\(stableHash(k))_\(id)"
+                let fname = "\(stableHash(k))_\(id)"
                 let g = Self.gray(pc.pixels, Int(pc.imageSize.width), Int(pc.imageSize.height), x, y, dPx, lo: win.lo, hi: win.hi)
-                if classifier.save(gray: g, name: name, yes: yes) { files.append(name) }
+                if classifier.save(gray: g, name: fname, yes: yes) { files.append(fname) }
             }
         }
         for it in all {
@@ -430,31 +485,38 @@ final class CropSession: ObservableObject {
                 if moved, let o = it.orig { teach("o_" + it.id, x: o.x, y: o.y, dNm: pc.store.diameterNm(o), yes: false, weight: 0.5, picture: false) }
             }
         }
-        // two blank spots of the crop as easy negatives (so "no" also covers plain background)
-        var rng = LCG(s: stableHash(k) &+ UInt64(t.id) &* 7919 | 1)
-        let half = sidePx / 2, minD = 0.8 * defaultDiameterPx
+        // blank spots of the area as easy negatives (so "no" also covers plain background): two per section, more for a big region
+        let tag = t.map { "\($0.id)" } ?? "r" + String(stableHash(Pick.newID()) % 100000)
+        var rng = LCG(s: stableHash(k) &+ UInt64(t?.id ?? Int(area.minX) &+ Int(area.minY)) &* 7919 | 1)
+        let wanted = t != nil ? 2 : min(8, max(2, Int((area.width * area.height / (sidePx * sidePx) * 2).rounded())))
+        let minD = 0.8 * defaultDiameterPx
         let near = pc.store.picks(k).filter { $0.status != .dismissed }.map { CGPoint(x: $0.x, y: $0.y) } + all.filter { !$0.removed }.map { CGPoint(x: $0.x, y: $0.y) }
         var made = 0, tries = 0
-        while made < 2, tries < 200 {
+        while made < wanted, tries < 200 {
             tries += 1
-            let x = t.cx + (rng.next() - 0.5) * 2 * half, y = t.cy + (rng.next() - 0.5) * 2 * half
+            let x = area.minX + rng.next() * area.width, y = area.minY + rng.next() * area.height
             guard pc.inside(CGPoint(x: x, y: y)), !near.contains(where: { hypot($0.x - x, $0.y - y) < minD }) else { continue }
-            teach("b\(t.id)_\(made)", x: x, y: y, dNm: defNm, yes: false, weight: nil, decoy: true)
+            teach("b\(tag)_\(made)", x: x, y: y, dNm: defNm, yes: false, weight: nil, decoy: true)
             made += 1
         }
         pc.store.setSwipe(k, log)
         rr.finishBatch()
         classifier.retrain()
 
-        commits.append(CommitRecord(tile: t, key: k, serial: serial, logged: logged, sampleIDs: sampleIDs, fileNames: files, items: all))
-        reviewed[reviewKey, default: []].insert(t.id)
-        queue.removeFirst(); reviewedCount += 1
-        zoomOut = false
+        let region = DoneRegion(x0: area.minX, y0: area.minY, x1: area.maxX, y1: area.maxY)
+        pc.store.addSection(k, region)
+        commits.append(CommitRecord(tile: t, key: k, serial: serial, logged: logged, sampleIDs: sampleIDs, fileNames: files, items: all, section: region.id))
+        let committed = Set(all.map { $0.id })
+        let head = queue.first
+        if t != nil { items = [] } else { items.removeAll { committed.contains($0.id) } }
+        selected = nil
+        requeue()
         refreshSizeTyper()
-        loadItems(); reorder()
+        if t != nil || queue.first != head { loadItems() } else { editHistory = []; revision += 1 }
+        reorder()
     }
 
-    /// Takes back the last confirmed crop: picks, log, training examples and the crop's place in the queue.
+    /// Takes back the last confirmed section or region: picks, log, training examples, its mark and its place in the queue.
     private func undoCommit() {
         guard let c = commits.popLast() else { return }
         if c.serial != nil, pc.store.topSerial(c.key) == c.serial { pc.store.undo(c.key) }
@@ -464,17 +526,99 @@ final class CropSession: ObservableObject {
         for id in c.sampleIDs { rr.forget(key: c.key, id: id) }
         rr.finishBatch()
         for f in c.fileNames { classifier.forget(name: f) }
-        reviewed[reviewKey]?.remove(c.tile.id)
-        queue.insert(c.tile, at: 0); reviewedCount = max(0, reviewedCount - 1)
-        zoomOut = false
-        items = c.items; selected = nil; editHistory = []; revision += 1; shownAt = Date()
+        pc.store.removeSection(c.key, id: c.section)
+        if let t = c.tile {
+            requeue(restoring: t)
+            items = c.items; selected = nil; editHistory = []; revision += 1; shownAt = Date()
+            if active { frame() }
+        } else {
+            requeue()
+            let ids = Set(c.items.map { $0.id })
+            items.removeAll { ids.contains($0.id) }
+            if let r = currentRect { items += c.items.filter { r.contains(CGPoint(x: $0.x, y: $0.y)) } }
+            selected = nil; editHistory = []; revision += 1
+        }
         refreshSizeTyper()
     }
 
     /// Moves the crop on screen to the end of the queue without deciding anything.
     func skip() {
         guard queue.count > 1, let t = queue.first else { return }
-        queue.removeFirst(); queue.append(t); zoomOut = false; loadItems()
+        queue.removeFirst(); queue.append(t); loadItems()
+    }
+
+    /// Forgets which sections of this micrograph are finished (the picks stay as they are).
+    func clearSections() {
+        guard let k = key ?? pc.currentKey else { return }
+        pc.store.clearSections(k); commits.removeAll()
+        rebuild()
+    }
+
+    // MARK: pointer (the main viewer calls these while the editor is active; pick coordinates throughout)
+
+    /// A section's own rectangle: circles can only be added inside it.
+    private func insideSection(_ p: CGPoint) -> Bool { currentRect?.contains(p) ?? false }
+
+    func pointerDown(at p: CGPoint, tolerancePx: Double, region: Bool) {
+        guard active else { return }
+        if region || regionTool { gesture = .region(start: p); regionRect = CGRect(origin: p, size: .zero); return }
+        if let it = hit(x: p.x, y: p.y, tolerancePx: tolerancePx) {
+            gesture = .item(id: it.id, origin: CGPoint(x: it.x, y: it.y), start: p, moved: false); selected = it.id
+        } else { gesture = .empty(start: p, moved: false) }
+    }
+
+    /// `movedPoints` = pointer travel since mouse down in view points (a click becomes a drag past 3).
+    func pointerDragged(to p: CGPoint, movedPoints: Double) -> DragResult {
+        switch gesture {
+        case .none: return .pan
+        case .empty(let start, _):
+            guard movedPoints >= 3 else { return .none }
+            gesture = .empty(start: start, moved: true)
+            return .pan
+        case .item(let id, let origin, let start, let moved):
+            guard moved || movedPoints >= 3 else { return .none }
+            if !moved { beginEdit(); gesture = .item(id: id, origin: origin, start: start, moved: true) }
+            move(id, to: CGPoint(x: origin.x + p.x - start.x, y: origin.y + p.y - start.y))
+            revision += 1
+            return .handled
+        case .region(let start):
+            regionRect = CGRect(x: min(start.x, p.x), y: min(start.y, p.y), width: abs(p.x - start.x), height: abs(p.y - start.y))
+            return .handled
+        }
+    }
+
+    /// `now` is injectable for tests. A second click on a circle within 0.45 s removes it.
+    func pointerUp(at p: CGPoint, now: Date = Date()) {
+        defer { gesture = .none }
+        switch gesture {
+        case .none: break
+        case .region:
+            let r = regionRect; regionRect = nil
+            if let r { markRegionDone(r) }
+        case .item(let id, _, _, let moved):
+            if moved { lastClick = nil; break }
+            if let l = lastClick, l.id == id, now.timeIntervalSince(l.at) < 0.45 { remove(id); lastClick = nil }
+            else { lastClick = (id, now) }
+        case .empty(_, let moved):
+            if moved { break }
+            if insideSection(p), let id = add(x: p.x, y: p.y) { lastClick = (id, now) } else { selected = nil }
+        }
+    }
+
+    /// Right click: removes the circle under the pointer.
+    func rightClick(at p: CGPoint, tolerancePx: Double) {
+        guard active, let it = hit(x: p.x, y: p.y, tolerancePx: tolerancePx) else { return }
+        remove(it.id)
+    }
+
+    /// Pinch over a circle (the selected one, else the one under the pointer): resizes it. False when there is none, so the
+    /// viewer zooms instead.
+    func pinch(at p: CGPoint, tolerancePx: Double, scale: Double, began: Bool) -> Bool {
+        guard active, scale > 0 else { return false }
+        guard let id = selected ?? hit(x: p.x, y: p.y, tolerancePx: tolerancePx)?.id, let it = items.first(where: { $0.id == id && !$0.removed }) else { return false }
+        if began { beginEdit() }
+        setDiameter(id, nm: it.diameterNm * scale)
+        return true
     }
 }
 

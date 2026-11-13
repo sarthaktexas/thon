@@ -204,7 +204,7 @@ struct SortView: View {
                 Text(so.scope == .unsorted ? "Nothing left to sort on this micrograph" : "No accepted picks on this micrograph").font(.title3)
                 Text("Accepted auto-picks that have not been sorted yet show up here. Accept candidates first in the grid triage.").foregroundStyle(.secondary)
                 HStack {
-                    Button("Open crop editor") { model.showSwipe = false; model.showCrops = true }
+                    Button("Open crop editor") { model.showSwipe = false; model.picks.enabled = true; model.picks.crops.active = true }
                     if so.scope == .unsorted { Button("Show all picks") { so.scope = .all } }
                 }
             } else {

@@ -14,7 +14,7 @@
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSLocalNetworkUsageDescription</key><string>Thon lets your phone swipe through particle candidates over your local network, only while the Phone panel is switched on.</string>
-    <key>NSBonjourServices</key><array><string>_http._tcp</string></array>
+    <key>NSBonjourServices</key><array><string>_http._tcp</string><string>_thon-swipe._tcp</string><string>_thon-swipe._udp</string></array>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>

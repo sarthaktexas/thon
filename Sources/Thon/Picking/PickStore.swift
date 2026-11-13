@@ -239,7 +239,8 @@ final class PickStore: ObservableObject {
     }
 
     /// Session a micrograph is listed / exported under: the one it was moved to, else the session whose folder holds the file.
-    func effectiveSessionID(_ key: String) -> String? {
+    func effectiveSessionID(_ rawKey: String) -> String? {
+        let key = FrameKey.base(rawKey)               // the frames of a stack belong to the session of their file
         if let s = project.mics[key]?.session, project.sessions.contains(where: { $0.id == s }) { return s }
         return keyMap.sessionID(ofKey: key)
     }
@@ -302,6 +303,7 @@ final class PickStore: ObservableObject {
     /// Key of a micrograph: path relative to the project folder (forward slashes), else the absolute path;
     /// in a .thon project "<session id>/<path inside the session folder>".
     func key(for url: URL) -> String { keyMap.key(for: url) }
+    func key(for url: URL, frame: Int?) -> String { keyMap.key(for: url, frame: frame) }
 
     /// Test hook: replace the scheme without touching picks.
     func setScheme_forTest(_ s: LabelScheme) { project.scheme = s }
@@ -317,11 +319,17 @@ final class PickStore: ObservableObject {
     // MARK: reading
 
     func record(_ key: String) -> MicRecord { project.mics[key] ?? MicRecord() }
+    /// True when some frame of the stack `base` (a plain micrograph key) has picks or candidates of its own.
+    func hasFramePicks(base: String) -> Bool {
+        let pre = base + FrameKey.marker
+        return project.mics.contains { $0.key.hasPrefix(pre) && FrameKey.base($0.key) == base && !$0.value.picks.isEmpty }
+    }
     func picks(_ key: String) -> [Pick] { project.mics[key]?.picks ?? [] }
     func accepted(_ key: String) -> [Pick] { picks(key).filter { $0.status == .accepted } }
     func candidates(_ key: String) -> [Pick] { picks(key).filter { $0.status == .candidate } }
     func pick(_ id: String, in key: String) -> Pick? { project.mics[key]?.picks.first { $0.id == id } }
     func diameterNm(_ p: Pick) -> Double { p.diameterNm ?? project.params.diameterNm }
+    func boxNm(_ p: Pick) -> Double { p.boxNm ?? project.params.boxNm }
 
     func counts(_ key: String) -> [String: Int] {
         var c: [String: Int] = [:]
@@ -397,6 +405,19 @@ final class PickStore: ObservableObject {
         mutateRecord(key) { $0.width = width; $0.height = height; $0.angpix = angpix }
         touch(key, structural: false)
     }
+    /// Crop editor: the parts of a micrograph that are finished. Not part of the pick undo history (the crop editor undoes them itself).
+    func sections(_ key: String) -> [DoneRegion] { project.mics[key]?.sections ?? [] }
+    func addSection(_ key: String, _ r: DoneRegion) {
+        mutateRecord(key) { var l = $0.sections ?? []; l.append(r); $0.sections = l }; touch(key, structural: false)
+    }
+    func removeSection(_ key: String, id: String) {
+        guard project.mics[key]?.sections?.contains(where: { $0.id == id }) == true else { return }
+        mutateRecord(key) { var l = $0.sections ?? []; l.removeAll { $0.id == id }; $0.sections = l.isEmpty ? nil : l }; touch(key, structural: false)
+    }
+    func clearSections(_ key: String) {
+        guard project.mics[key]?.sections != nil else { return }
+        mutateRecord(key) { $0.sections = nil }; touch(key, structural: false)
+    }
     func setSwipe(_ key: String, _ log: SwipeLog?) { mutateRecord(key) { $0.swipe = log }; touch(key, structural: false) }
     func setAutoParams(_ key: String, _ a: AutoParams?) { mutateRecord(key) { $0.auto = a }; touch(key, structural: false) }
 
@@ -457,14 +478,17 @@ final class PickStore: ObservableObject {
 
     /// Replaces the micrograph's undecided auto candidates with `cands` as ONE undoable edit. Accepted picks and
     /// dismissed candidates are kept; new candidates within `suppressPx` of either are dropped.
+    /// A candidate that carries its own diameter (a size sweep) is suppressed within half of THAT diameter (`angpix` converts it).
     @discardableResult
-    func applyCandidates(_ key: String, _ cands: [AutoCandidate], label: String, suppressPx: Double, name: String) -> Int {
+    func applyCandidates(_ key: String, _ cands: [AutoCandidate], label: String, suppressPx: Double, name: String, angpix: Double? = nil) -> Int {
         var added = 0
+        func radius(_ c: AutoCandidate) -> Double { (c.diameterNm != nil && angpix != nil) ? 0.5 * c.diameterNm! * 10 / angpix! : suppressPx }
+        let widest = cands.map(radius).max() ?? suppressPx
         perform(key, name) { l in
             l.removeAll { $0.status == .candidate && $0.source == .auto }
-            let fixed = PickGrid(picks: l.filter { $0.status != .candidate }, cell: max(16, suppressPx))
-            for c in cands where fixed.nearest(x: c.x, y: c.y, radius: suppressPx) == nil {
-                l.append(Pick(x: c.x, y: c.y, label: label, score: c.score, source: .auto, status: .candidate)); added += 1
+            let fixed = PickGrid(picks: l.filter { $0.status != .candidate }, cell: max(16, widest))
+            for c in cands where fixed.nearest(x: c.x, y: c.y, radius: radius(c)) == nil {
+                l.append(Pick(x: c.x, y: c.y, label: label, score: c.score, source: .auto, status: .candidate, diameterNm: c.diameterNm, boxNm: c.boxNm)); added += 1
             }
         }
         return added

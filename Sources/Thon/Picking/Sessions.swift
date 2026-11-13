@@ -109,7 +109,18 @@ struct PickKeyMap {
         return roots.contains { $0.id == id } ? id : nil
     }
 
-    func url(forKey key: String) -> URL {
+    /// Key of frame `frame` (0-based) of a file; nil = the whole file (the plain key).
+    func key(for url: URL, frame: Int?) -> String { FrameKey.make(key(for: url), frame: frame) }
+
+    /// What a background pixel loader needs for `key`: the file's path (session keys are not paths) with the frame suffix kept.
+    func loaderKey(_ key: String) -> String {
+        guard isSessions else { return key }
+        let (b, f) = FrameKey.split(key)
+        return FrameKey.make(url(forKey: b).path, frame: f)
+    }
+
+    func url(forKey rawKey: String) -> URL {
+        let key = FrameKey.base(rawKey)
         if key.hasPrefix("/") { return URL(fileURLWithPath: key) }
         if let id = sessionID(ofKey: key), let r = roots.first(where: { $0.id == id }) {
             return r.url.appendingPathComponent(String(key.dropFirst(id.count + 1)))

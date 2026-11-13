@@ -16,6 +16,11 @@ struct AutoParams: Codable, Equatable {
     var zThreshold = 4.0              // robust z of the score map
     var edgeMarginPx = 0.0            // 0 -> half a diameter
     var maxPicks = 400
+    /// Size sweep: when `sweepDiametersNm` is not empty the picker runs at each of these diameters and keeps, at every
+    /// location, the diameter that scored best. `sweepBoxesNm` is empty (box = diameter x the project's box / diameter ratio),
+    /// one value (the same box for all), or one box per diameter. The project's own diameter is ignored while a sweep is on.
+    var sweepDiametersNm: [Double] = []
+    var sweepBoxesNm: [Double] = []
 
     init() {}
     init(from d: Decoder) throws {
@@ -30,6 +35,8 @@ struct AutoParams: Codable, Equatable {
         zThreshold = try c.decodeIfPresent(Double.self, forKey: .zThreshold) ?? z.zThreshold
         edgeMarginPx = try c.decodeIfPresent(Double.self, forKey: .edgeMarginPx) ?? z.edgeMarginPx
         maxPicks = try c.decodeIfPresent(Int.self, forKey: .maxPicks) ?? z.maxPicks
+        sweepDiametersNm = try c.decodeIfPresent([Double].self, forKey: .sweepDiametersNm) ?? []
+        sweepBoxesNm = try c.decodeIfPresent([Double].self, forKey: .sweepBoxesNm) ?? []
     }
 
     /// Parameters that change the score map (the expensive part); the rest only changes peak extraction.
@@ -46,7 +53,11 @@ struct ScoreMap {
     var imageWidth: Int, imageHeight: Int
 }
 
-struct AutoCandidate: Equatable { var x: Double; var y: Double; var score: Float }
+/// A candidate from the picker. `diameterNm` / `boxNm` are set only by a size sweep (nil = the project's size).
+struct AutoCandidate: Equatable { var x: Double; var y: Double; var score: Float; var diameterNm: Double? = nil; var boxNm: Double? = nil }
+
+/// One (diameter, box) pair of a size sweep.
+struct SweepScale: Equatable { var diameterNm: Double; var boxNm: Double }
 
 /// CPU auto-picker (Foundation only). Pipeline: bin -> flatten -> robust z-score -> polarity ->
 /// smooth -> score (bright core minus annulus, or difference-of-Gaussians blob) -> robust z of the score ->
@@ -254,6 +265,143 @@ enum AutoPicker {
     static func run(pixels: [Float], width: Int, height: Int, angpix: Double, params: AutoParams) -> [AutoCandidate] {
         extract(scoreMap(pixels: pixels, width: width, height: height, angpix: angpix, params: params), params: params, angpix: angpix)
     }
+
+    // MARK: size sweep
+
+    /// The (diameter, box) pairs of a sweep, or nil when the box list does not fit (it must have 0, 1 or one value per diameter).
+    /// With no boxes given the box follows the diameter at `boxPerDiameter` (the project's box / diameter ratio).
+    static func sweepScales(diameters: [Double], boxes: [Double], boxPerDiameter: Double) -> [SweepScale]? {
+        let d = diameters.filter { $0 > 0 }
+        guard !d.isEmpty else { return nil }
+        if boxes.isEmpty { return d.map { SweepScale(diameterNm: $0, boxNm: $0 * boxPerDiameter) } }
+        if boxes.count == 1 { return d.map { SweepScale(diameterNm: $0, boxNm: boxes[0]) } }
+        guard boxes.count == d.count else { return nil }
+        return zip(d, boxes).map { SweepScale(diameterNm: $0, boxNm: $1) }
+    }
+
+    /// `p` at another diameter: the minimum separation keeps its ratio to the diameter, the other settings are unchanged.
+    static func scaled(_ p: AutoParams, to d: Double) -> AutoParams {
+        var q = p
+        let f = d / max(p.diameterNm, 1e-9)
+        q.diameterNm = d
+        q.minSepNm = p.minSepNm * f
+        q.sweepDiametersNm = []; q.sweepBoxesNm = []
+        return q
+    }
+
+    /// Runs the picker at every scale (`map` supplies the score map for a parameter set, so callers can cache), drops
+    /// candidates whose box would overhang the micrograph, and merges the scales: at each location the best-scoring
+    /// size is the one closest to the particle's measured half-maximum diameter, and a candidate whose centre lies inside a better one (within 0.6 x the larger diameter) is dropped.
+    static func sweep(scales: [SweepScale], params p: AutoParams, angpix: Double, pixels: [Float], width: Int, height: Int,
+                      map: (AutoParams) -> ScoreMap) -> [AutoCandidate] {
+        var all: [AutoCandidate] = []
+        for s in scales {
+            let q = scaled(p, to: s.diameterNm)
+            let half = s.boxNm * 10 / angpix / 2
+            for var c in extract(map(q), params: q, angpix: angpix)
+            where c.x >= half && c.y >= half && c.x <= Double(width - 1) - half && c.y <= Double(height - 1) - half {
+                c.diameterNm = s.diameterNm; c.boxNm = s.boxNm
+                all.append(c)
+            }
+        }
+        // several sizes at one place: the half-maximum diameter of the particle there says which size fits
+        let outerR = (scales.map { $0.diameterNm }.max() ?? 0) * 10 / angpix / 2
+        return mergeScales(all, angpix: angpix, maxPicks: p.maxPicks) { cx, cy, dMin, _ in
+            halfMaxDiameter(pixels: pixels, width: width, height: height, cx: cx, cy: cy, coreR: 0.3 * dMin / 2, outerR: outerR)
+        }
+    }
+
+    /// Candidates closer than this x the larger diameter are one particle (a candidate inside a better one is dropped).
+    static let sizeOverlapFraction = 0.6
+
+    /// Diameter (px) at which the radial profile around (cx, cy) has fallen half way from the core to the surroundings, or nil.
+    /// The core is the mean within `coreR`; the surroundings are the median of the profile between 1.25 and 1.6 x `outerR`.
+    /// Works for bright and dark particles. Uses only the pixels (bilinear ring means, 32 angles), so it is cheap per candidate.
+    static func halfMaxDiameter(pixels: [Float], width: Int, height: Int, cx: Double, cy: Double, coreR: Double, outerR: Double) -> Double? {
+        let nA = 32, last = Int((1.6 * outerR).rounded(.up))
+        guard last >= 4, coreR >= 0.5 else { return nil }
+        func sample(_ x: Double, _ y: Double) -> Float? {
+            guard x >= 0, y >= 0, x <= Double(width - 1), y <= Double(height - 1) else { return nil }
+            let ix = min(Int(x), width - 2), iy = min(Int(y), height - 2)
+            let fx = Float(x - Double(ix)), fy = Float(y - Double(iy))
+            let a = pixels[iy * width + ix], b = pixels[iy * width + ix + 1], c = pixels[(iy + 1) * width + ix], d = pixels[(iy + 1) * width + ix + 1]
+            return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy
+        }
+        var prof = [Float?](repeating: nil, count: last + 1)
+        for r in 0...last {
+            var acc: Float = 0, n = 0
+            for k in 0..<(r == 0 ? 1 : nA) {
+                let th = 2 * Double.pi * Double(k) / Double(nA)
+                if let v = sample(cx + Double(r) * cos(th), cy + Double(r) * sin(th)) { acc += v; n += 1 }
+            }
+            if n >= (r == 0 ? 1 : nA / 2) { prof[r] = acc / Float(n) }
+        }
+        let core = prof[0...min(last, max(1, Int(coreR)))].compactMap { $0 }
+        let out = prof[Int((1.25 * outerR).rounded(.up))...last].compactMap { $0 }.sorted()
+        guard !core.isEmpty, out.count >= 3 else { return nil }
+        let c = core.reduce(0, +) / Float(core.count), bg = out[out.count / 2], half = (c + bg) / 2
+        guard abs(c - bg) > 1e-9 else { return nil }
+        var r = max(1, Int(coreR))
+        while r <= last {
+            if let v = prof[r], (c > bg ? v <= half : v >= half), let u = prof[r - 1] {
+                let t = abs(u - v) > 1e-12 ? Double((u - half) / (u - v)) : 0
+                return 2 * (Double(r - 1) + min(max(t, 0), 1))
+            }
+            r += 1
+        }
+        return nil
+    }
+
+    /// Candidates of different sizes with (nearly) the same centre are one particle. When `measure` can size it (the half-maximum
+    /// diameter at its centre, px), the size closest to that on a log scale represents it; otherwise the best score does.
+    static func mergeScales(_ cands: [AutoCandidate], angpix: Double, maxPicks: Int, measure: ((Double, Double, Double, Double) -> Double?)? = nil) -> [AutoCandidate] {
+        func dia(_ c: AutoCandidate) -> Double { (c.diameterNm ?? 0) * 10 / angpix }           // px
+        let cell = max(8, sizeOverlapFraction * (cands.map(dia).max() ?? 8))
+        func key(_ cx: Int, _ cy: Int) -> Int64 { Int64(cx) << 32 | Int64(UInt32(truncatingIfNeeded: cy)) }
+        func cellOf(_ c: AutoCandidate) -> (Int, Int) { (Int(floor(c.x / cell)), Int(floor(c.y / cell))) }
+        var all: [Int64: [Int]] = [:]
+        for (i, c) in cands.enumerated() { let (cx, cy) = cellOf(c); all[key(cx, cy), default: []].append(i) }
+        var parent = Array(cands.indices)
+        func find(_ i: Int) -> Int { var j = i; while parent[j] != j { parent[j] = parent[parent[j]]; j = parent[j] }; return j }
+        for (i, c) in cands.enumerated() {
+            let (cx, cy) = cellOf(c)
+            for ix in (cx - 1)...(cx + 1) { for iy in (cy - 1)...(cy + 1) {
+                for j in all[key(ix, iy)] ?? [] where j > i && hypot(cands[j].x - c.x, cands[j].y - c.y) < 0.25 * max(dia(cands[j]), dia(c)) {
+                    parent[find(j)] = find(i)
+                }
+            } }
+        }
+        var groups: [Int: [Int]] = [:]
+        for i in cands.indices { groups[find(i), default: []].append(i) }
+        let live: [AutoCandidate] = groups.values.map { g in
+            let best = g.max { cands[$0].score < cands[$1].score }!
+            guard g.count > 1, let measure,
+                  let m = measure(cands[best].x, cands[best].y, g.map { dia(cands[$0]) }.min()!, g.map { dia(cands[$0]) }.max()!), m > 0 else { return cands[best] }
+            let pick = g.min { abs(log(max(dia(cands[$0]), 1e-9) / m)) < abs(log(max(dia(cands[$1]), 1e-9) / m)) }!
+            return cands[pick]
+        }
+        // 2. best score first; a candidate whose centre lies inside a kept one is the same particle
+        let order = live.sorted { a, b in
+            if a.score != b.score { return a.score > b.score }
+            if (a.diameterNm ?? 0) != (b.diameterNm ?? 0) { return (a.diameterNm ?? 0) > (b.diameterNm ?? 0) }
+            return a.y != b.y ? a.y < b.y : a.x < b.x
+        }
+        var occ: [Int64: [Int]] = [:]
+        var kept: [AutoCandidate] = []
+        for c in order {
+            if kept.count >= maxPicks { break }
+            let (cx, cy) = cellOf(c)
+            var ok = true
+            search: for ix in (cx - 1)...(cx + 1) { for iy in (cy - 1)...(cy + 1) {
+                for j in occ[key(ix, iy)] ?? [] {
+                    let o = kept[j]
+                    if hypot(o.x - c.x, o.y - c.y) < sizeOverlapFraction * max(dia(o), dia(c)) { ok = false; break search }
+                }
+            } }
+            if ok { occ[key(cx, cy), default: []].append(kept.count); kept.append(c) }
+        }
+        return kept
+    }
 }
 
 // MARK: external pickers
@@ -297,7 +445,7 @@ enum ExternalPicker {
     }
 }
 
-/// `Thon --autopick FILE.mrc [--diameter nm] [--z z] [--method core|log] [--dark] [--flatten nm] [--max n]` prints x,y,score CSV.
+/// `Thon --autopick FILE.mrc [--diameter nm | --diameters 12,16,20 [--boxes nm,..]] [--z z] [--method core|log] [--dark] [--flatten nm] [--max n]` prints x,y,score CSV (a sweep adds diameter_nm,box_nm).
 func runAutoPickCLI(_ args: [String]) -> Int32 {
     guard let i = args.firstIndex(of: "--autopick"), args.count > i + 1 else { print("usage: --autopick FILE.mrc [options]"); return 2 }
     func opt(_ n: String) -> String? { args.firstIndex(of: n).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } }
@@ -313,9 +461,21 @@ func runAutoPickCLI(_ args: [String]) -> Int32 {
         p.method = (opt("--method") ?? "core") == "log" ? .log : .core
         let ap = f.header.pixelSizeA ?? 1
         let t0 = Date()
-        let c = AutoPicker.run(pixels: px, width: f.width, height: f.height, angpix: ap, params: p)
+        let c: [AutoCandidate]
+        if let ds = opt("--diameters") {
+            guard let dl = SweepSpec.parse(ds), !dl.isEmpty, let bl = SweepSpec.parse(opt("--boxes") ?? ""),
+                  let sc = AutoPicker.sweepScales(diameters: dl, boxes: bl, boxPerDiameter: ProjectParams().boxNm / ProjectParams().diameterNm) else {
+                print("ERROR: --diameters / --boxes: give sizes in nm, e.g. 12,16,20 or 10:30:5; boxes: none, one, or one per diameter"); return 2
+            }
+            p.diameterNm = dl[0]
+            c = AutoPicker.sweep(scales: sc, params: p, angpix: ap, pixels: px, width: f.width, height: f.height) {
+                AutoPicker.scoreMap(pixels: px, width: f.width, height: f.height, angpix: ap, params: $0)
+            }
+        } else {
+            c = AutoPicker.run(pixels: px, width: f.width, height: f.height, angpix: ap, params: p)
+        }
         FileHandle.standardError.write(Data(String(format: "%d picks in %.2f s (%.4g A/px)\n", c.count, Date().timeIntervalSince(t0), ap).utf8))
-        for k in c { print(String(format: "%.3f,%.3f,%.4f", k.x, k.y, k.score)) }
+        for k in c { print(String(format: "%.3f,%.3f,%.4f", k.x, k.y, k.score) + (k.diameterNm.map { String(format: ",%g,%g", $0, k.boxNm ?? 0) } ?? "")) }
         return 0
     } catch { print("ERROR:", error.localizedDescription); return 1 }
 }

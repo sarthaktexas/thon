@@ -24,6 +24,7 @@ private func phoneState(_ o: [String: Any]) -> [String: Any] { (o["state"] as? [
 
 func testPhone(_ t: inout TestRun) {
     t.section("phone swiper API")
+    testPhoneWire(&t)
 
     // --- HTTP parsing
     func parse(_ s: String) -> PhoneParse { parsePhoneRequest(Data(s.utf8)) }
@@ -190,4 +191,33 @@ func testPhone(_ t: inout TestRun) {
 
     // --- assets
     t.check(!PhoneAssets.indexHTML.isEmpty && !PhoneAssets.appJS.isEmpty && !PhoneAssets.appCSS.isEmpty, "phone client assets are embedded")
+}
+
+
+/// The Multipeer wire format: packing, framing, reassembly and its limits.
+func testPhoneWire(_ t: inout TestRun) {
+    let head = PhoneWireHead(kind: "res", id: 7, status: 200, contentType: "image/jpeg", token: nil)
+    let body = Data((0..<50_000).map { UInt8($0 % 251) })
+    let msg = PhoneWire.pack(head, body: body)
+    if let u = PhoneWire.unpack(msg) { t.check(u.head == head && u.body == body, "wire: pack / unpack round trip") } else { t.check(false, "wire: unpack") }
+    t.check(PhoneWire.unpack(Data([0, 0, 0, 200, 1, 2])) == nil && PhoneWire.unpack(Data()) == nil, "wire: truncated message is rejected")
+    let fr = PhoneWire.frames(of: msg, id: 7)
+    t.check(fr.count == (msg.count + PhoneWire.frameSize - 1) / PhoneWire.frameSize && fr.count > 1 && fr.allSatisfy { $0.count <= PhoneWire.frameSize + PhoneWire.frameHeader }, "wire: message is cut into bounded frames")
+    let ra = PhoneReassembler()
+    var got: Data?
+    for f in fr.reversed() { if let m = ra.feed(f) { got = m } }                       // reverse order
+    t.check(got == msg, "wire: frames in reverse order reassemble")
+    let other = PhoneWire.frames(of: PhoneWire.pack(PhoneWireHead(kind: "req", id: 8, method: "GET", path: "/api/state")), id: 8)
+    var done: [Data] = []
+    let mixed = Array(fr.prefix(2)) + other + Array(fr.dropFirst(2))                       // interleaved messages
+    for f in mixed { if let m = ra.feed(f) { done.append(m) } }
+    t.check(done.count == 2 && done.contains(msg), "wire: interleaved messages both complete")
+    t.check(ra.feed(Data([1, 2, 3])) == nil && ra.feed(Data([0, 0, 0, 1, 0, 5, 0, 2, 9])) == nil, "wire: malformed frames are ignored")
+    t.check(ra.feed(Data([0, 0, 0, 9, 0, 0, 0xFF, 0xFF, 1])) == nil, "wire: absurd frame count is ignored")
+    let r2 = PhoneReassembler()
+    for id in 100..<120 { _ = r2.feed(Data([0, 0, 0, UInt8(id), 0, 0, 0, 2, 1])) }          // 20 messages left half-finished
+    let again = PhoneWire.frames(of: PhoneWire.pack(head, body: Data(repeating: 1, count: 40_000)), id: 100)
+    var late: Data?
+    for f in again { if let m = r2.feed(f) { late = m } }
+    t.check(late != nil, "wire: a stalled flood does not block a later message")
 }

@@ -227,7 +227,7 @@ extension MRCFile {
             ("cell (Å)", String(format: "%.5g, %.5g, %.5g", h.cellX, h.cellY, h.cellZ)),
             ("dmin / dmax / dmean / rms (header)", String(format: "%.6g / %.6g / %.6g / %.6g", h.dmin, h.dmax, h.dmean, h.rms)),
             ("extended header bytes", "\(h.nsymbt)"),
-        ] + h.labels.enumerated().map { ("label \($0.offset + 1)", $0.element) }
+        ] + (h.extType.isEmpty ? [] : [("extended header type", h.extType)]) + h.labels.enumerated().map { ("label \($0.offset + 1)", $0.element) }
         return rows.enumerated().map { TagRow(id: $0.offset, path: $0.element.0, value: $0.element.1) }
     }
 }

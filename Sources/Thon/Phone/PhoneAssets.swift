@@ -57,7 +57,7 @@ enum PhoneAssets {
     static let appJS = ###"""
 (() => {
 'use strict';
-// Thon phone swiper client. Talks to the Mac over docs/PHONE_API.md; holds no scheme or deck of its own.
+// Thon phone swiper client. Talks to the Mac over its JSON API; holds no scheme or deck of its own.
 const $ = id => document.getElementById(id);
 const LS = 'thonPhone_v1_';
 const store = {

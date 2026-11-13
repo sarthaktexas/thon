@@ -31,15 +31,24 @@ final class PickController: ObservableObject {
     // auto-picker state
     @Published var autoParams = AutoParams()
     @Published var autoLive = false
+    // size sweep (built-in picker): sizes typed as "12, 16, 20" or "10:30:5"; copied into autoParams by `applySweepText()`
+    @Published var sweepOn = false
+    @Published var sweepDiameterText = ""
+    @Published var sweepBoxText = ""
+    @Published var sweepError: String?
     @Published var autoBusy = false
     @Published var autoMessage: String?
     @Published var externalCommand = ""
     @Published var engine = PickEngine.builtin
+    var engineSettings = EngineSettings.shared
+    /// The engine that runs: Topaz and CryoSegNet only when they are switched on in Preferences, else the built-in picker.
+    var effectiveEngine: PickEngine { engineSettings.enabled ? engine : .builtin }
     @Published var maxScore: Float = 10              // upper end of the score-cutoff slider (from the last run)
     var pixels: [Float] = []                          // raw pixels of the current micrograph
     var currentURL: URL?
     private var imageGeneration = 0
     private var scoreCache: (gen: Int, sig: String, map: ScoreMap)?
+    private var sweepCache: (gen: Int, maps: [String: ScoreMap])?
     private var autoToken = 0
     private var lastAutoSerial: [String: Int] = [:]
     private let autoQueue = DispatchQueue(label: "thon.autopick", qos: .userInitiated)
@@ -67,6 +76,8 @@ final class PickController: ObservableObject {
     var effectiveAngpix: Double { pixelSizeA ?? 1 }
     func diameterPx(_ p: Pick) -> Double { store.diameterNm(p) * 10 / effectiveAngpix }
     var boxPx: Double { store.project.params.boxNm * 10 / effectiveAngpix }
+    /// Extraction box of one pick (px): its own box when a size sweep gave it one, else the project box.
+    func boxPx(_ p: Pick) -> Double { store.boxNm(p) * 10 / effectiveAngpix }
 
     func isVisible(_ p: Pick) -> Bool {
         if p.status == .dismissed || hiddenLabels.contains(p.label) { return false }
@@ -184,6 +195,24 @@ final class PickController: ObservableObject {
 
     // MARK: auto-picking
 
+    /// Reads the sweep fields into `autoParams` (off, or the sizes do not parse: the sweep is cleared and `sweepError` says why).
+    func applySweepText() {
+        sweepError = nil
+        var d: [Double] = [], b: [Double] = []
+        if sweepOn {
+            if let v = SweepSpec.parse(sweepDiameterText), !v.isEmpty { d = v } else { sweepError = "Diameters: type sizes in nm such as 12, 16, 20 or 10:30:5" }
+            if sweepError == nil {
+                if let v = SweepSpec.parse(sweepBoxText) { b = v } else { sweepError = "Boxes: type sizes in nm, or leave blank" }
+            }
+            if sweepError == nil, AutoPicker.sweepScales(diameters: d, boxes: b, boxPerDiameter: 1) == nil {
+                sweepError = "Boxes: leave blank, give one, or give one per diameter (\(d.count))"
+            }
+            if sweepError != nil { d = []; b = [] }
+        }
+        if autoParams.sweepDiametersNm != d { autoParams.sweepDiametersNm = d }
+        if autoParams.sweepBoxesNm != b { autoParams.sweepBoxesNm = b }
+    }
+
     /// Score map (cached while only extraction parameters change) -> candidates -> one undoable edit.
     /// `synchronous` is for tests; the app runs the numerics on a background queue.
     func runAutoPick(synchronous: Bool = false) {
@@ -193,6 +222,33 @@ final class PickController: ObservableObject {
         autoToken += 1
         let token = autoToken, gen = imageGeneration
         let px = pixels, w = Int(imageSize.width), h = Int(imageSize.height), ap = effectiveAngpix
+        if !params.sweepDiametersNm.isEmpty {
+            let pp = store.project.params
+            guard let scales = AutoPicker.sweepScales(diameters: params.sweepDiametersNm, boxes: params.sweepBoxesNm, boxPerDiameter: pp.boxNm / max(pp.diameterNm, 1e-9)) else {
+                autoMessage = "Size sweep: give no box sizes, one, or one per diameter"; return
+            }
+            let have = sweepCache?.gen == gen ? sweepCache!.maps : [:]
+            autoBusy = true
+            let sweepWork = { () -> ([String: ScoreMap], [AutoCandidate]) in
+                var maps = have
+                let c = AutoPicker.sweep(scales: scales, params: params, angpix: ap, pixels: px, width: w, height: h) { q in
+                    let s = q.scoreSignature
+                    if let m = maps[s] { return m }
+                    let m = AutoPicker.scoreMap(pixels: px, width: w, height: h, angpix: ap, params: q)
+                    maps[s] = m; return m
+                }
+                return (maps, c)
+            }
+            let sweepFinish = { [weak self] (r: ([String: ScoreMap], [AutoCandidate])) in
+                guard let self, token == self.autoToken, gen == self.imageGeneration, self.currentKey == k else { return }
+                self.sweepCache = (gen, r.0)
+                self.installCandidates(k, r.1, name: "Auto-pick (sizes)", params: params)
+                self.autoBusy = false
+            }
+            if synchronous { sweepFinish(sweepWork()) }
+            else { autoQueue.async { let r = sweepWork(); DispatchQueue.main.async { sweepFinish(r) } } }
+            return
+        }
         let sig = params.scoreSignature
         let cached = (scoreCache?.gen == gen && scoreCache?.sig == sig) ? scoreCache!.map : nil
         autoBusy = true
@@ -214,11 +270,15 @@ final class PickController: ObservableObject {
         // a repeat run replaces the previous run's edit instead of stacking undo steps
         if let s = lastAutoSerial[k], store.topSerial(k) == s { store.undo(k) }
         let suppress = 0.5 * store.project.params.diameterNm * 10 / effectiveAngpix
-        let n = store.applyCandidates(k, cands, label: activeLabel, suppressPx: suppress, name: name)
+        let n = store.applyCandidates(k, cands, label: activeLabel, suppressPx: suppress, name: name, angpix: effectiveAngpix)
         lastAutoSerial[k] = store.topSerial(k)
         if let params { store.setAutoParams(k, params) }
         maxScore = max(10, ceil((cands.map { $0.score }.max() ?? 10)))
         autoMessage = "\(n) candidates" + (cands.count > n ? " (\(cands.count - n) suppressed near existing picks)" : "")
+        if let ds = params?.sweepDiametersNm, !ds.isEmpty {
+            let by = Dictionary(grouping: cands, by: { $0.diameterNm ?? 0 }).mapValues { $0.count }
+            autoMessage! += " · by diameter: " + ds.map { String(format: "%g nm: %d", $0, by[$0] ?? 0) }.joined(separator: ", ")
+        }
         pruneSelection()
     }
 
@@ -229,7 +289,8 @@ final class PickController: ObservableObject {
 
     /// The Find particles button: the built-in picker, or Topaz / CryoSegNet through their bundled scripts.
     func runFind(config: EngineConfig = EngineSettings.shared.config) {
-        guard engine != .builtin else { runAutoPick(); return }
+        let engine = effectiveEngine
+        guard engine != .builtin else { applySweepText(); runAutoPick(); return }
         let cfg = config
         let problems = EngineCommand.problems(engine, cfg)
         if let first = problems.first { autoMessage = "\(engine.rawValue): \(first)"; return }
@@ -292,9 +353,9 @@ final class PickController: ObservableObject {
     @discardableResult
     func removeEdgePicks(marginPx: Double? = nil) -> Int {
         guard let k = currentKey else { return 0 }
-        let m = marginPx ?? boxPx / 2
-        let ids = Set(store.picks(k).filter { $0.status != .dismissed &&
-            ($0.x < m || $0.y < m || $0.x > imageSize.width - 1 - m || $0.y > imageSize.height - 1 - m) }.map { $0.id })
+        let ids = Set(store.picks(k).filter { p in
+            let m = marginPx ?? boxPx(p) / 2
+            return p.status != .dismissed && (p.x < m || p.y < m || p.x > imageSize.width - 1 - m || p.y > imageSize.height - 1 - m) }.map { $0.id })
         if !ids.isEmpty { store.remove(ids, from: k) }
         selection.subtract(ids)
         return ids.count

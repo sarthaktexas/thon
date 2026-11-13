@@ -12,6 +12,7 @@ struct MRCHeader {
     var nsymbt = 0
     var littleEndian = true
     var labels: [String] = []
+    var extType = ""                 // 4-character type of the extended header ("SERI" = SerialEM, "FEI1" / "FEI2" = Thermo Fisher)
 
     /// Å per pixel, or nil if the header carries no calibration (cell == grid, i.e. 1.0 Å/px).
     var pixelSizeA: Double? {
@@ -84,6 +85,7 @@ final class MRCFile: @unchecked Sendable {
         guard h.nx > 0, h.ny > 0, h.nz > 0, h.nx < 1 << 20, h.ny < 1 << 20 else { throw MRCError.badHeader("dimensions \(h.nx)×\(h.ny)×\(h.nz)") }
         guard h.nsymbt >= 0, h.nsymbt < 1 << 24 else { throw MRCError.badHeader("extended header size \(h.nsymbt)") }
         guard MRCHeader.supportedModes.contains(h.mode) else { throw MRCError.unsupportedMode(h.mode) }
+        h.extType = String(decoding: d.subdata(in: 104..<108).filter { $0 >= 32 && $0 < 127 }, as: UTF8.self)
         let nl = max(0, min(10, i32(55, le)))
         for k in 0..<nl {
             let bytes = d.subdata(in: (224 + 80 * k)..<(224 + 80 * (k + 1)))

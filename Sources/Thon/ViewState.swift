@@ -32,6 +32,8 @@ final class ViewState: ObservableObject {
     var backingScale: Double = 2
     var pendingFit = false
     var pendingFocus: (center: CGPoint, zoom: Double)?      // applied after the next fit (used by "go to pick")
+    /// While the crop editor is on, "fit" means the section on screen (set by `CropSession`; nil result = fit the whole image).
+    var sectionFrame: (() -> (center: CGPoint, zoom: Double)?)?
 
     func applyAuto() {
         guard autoContrast, let s = displayStats else { return }
@@ -50,6 +52,7 @@ final class ViewState: ObservableObject {
     }
 
     func fit() {
+        if let f = sectionFrame?() { center = f.center; zoom = f.zoom; return }
         zoom = fitZoom()
         center = CGPoint(x: imageSize.width / 2, y: imageSize.height / 2)
         if let f = pendingFocus { pendingFocus = nil; center = f.center; zoom = f.zoom }

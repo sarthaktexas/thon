@@ -51,6 +51,7 @@ struct GalleryItem: Identifiable, Equatable {
     var status: PickStatus
     var score: Float?
     var x: Double, y: Double
+    var boxPx: Double = 0             // extraction box of this pick (px)
     var thumb: [UInt8]?
     var cls: Int?
 }
@@ -77,7 +78,7 @@ final class GalleryModel: ObservableObject {
     /// Loads raw pixels of a micrograph by key (set by the app; runs on a background queue).
     var loader: ((URL?, String) -> (pixels: [Float], width: Int, height: Int)?)?
     var onGoTo: ((String, Double, Double) -> Void)?
-    private var cache: [String: (x: Double, y: Double, bytes: [UInt8])] = [:]
+    private var cache: [String: (x: Double, y: Double, box: Double, bytes: [UInt8])] = [:]
     private var cacheSig = ""
     private var token = 0
     private var batches: [[String]] = []
@@ -108,8 +109,8 @@ final class GalleryModel: ObservableObject {
         for k in keys {
             for p in pc.store.picks(k) where p.status == .accepted || (showCandidates && p.status == .candidate) {
                 if pc.hiddenLabels.contains(p.label) { continue }
-                var it = GalleryItem(id: p.id, key: k, label: p.label, status: p.status, score: p.score, x: p.x, y: p.y, thumb: nil, cls: pc.classes?.pickClass[p.id])
-                if let c = cache[p.id], c.x == p.x, c.y == p.y { it.thumb = c.bytes }
+                var it = GalleryItem(id: p.id, key: k, label: p.label, status: p.status, score: p.score, x: p.x, y: p.y, boxPx: pc.boxPx(p), thumb: nil, cls: pc.classes?.pickClass[p.id])
+                if let c = cache[p.id], c.x == p.x, c.y == p.y, c.box == it.boxPx { it.thumb = c.bytes }
                 out.append(it)
             }
         }
@@ -139,7 +140,7 @@ final class GalleryModel: ObservableObject {
         guard !missing.isEmpty else { progress = nil; revision += 1; return }
         token += 1
         let tk = token
-        let boxPx = pc.boxPx, smooth = self.smooth, invert = self.invert
+        let smooth = self.smooth, invert = self.invert
         let byKey = Dictionary(grouping: missing, by: { $0.key })
         let curKey = pc.currentKey, curPixels = pc.pixels, curW = Int(pc.imageSize.width), curH = Int(pc.imageSize.height)
         let loader = self.loader, root = pc.store.root, km = pc.store.keyResolver()
@@ -150,18 +151,18 @@ final class GalleryModel: ObservableObject {
             for (key, list) in byKey.sorted(by: { $0.key < $1.key }) {
                 if self?.token != tk { return }
                 var src: (pixels: [Float], width: Int, height: Int)?
-                if key == curKey, !curPixels.isEmpty { src = (curPixels, curW, curH) } else { src = loader?(root, km.isSessions ? km.url(forKey: key).path : key) }
+                if key == curKey, !curPixels.isEmpty { src = (curPixels, curW, curH) } else { src = loader?(root, km.loaderKey(key)) }
                 guard let s = src else { done += list.count; continue }
                 let win = robustWindow(s.pixels)
-                var res: [(String, Double, Double, [UInt8])] = []
+                var res: [(String, Double, Double, Double, [UInt8])] = []
                 for it in list {
-                    res.append((it.id, it.x, it.y, renderThumb(pixels: s.pixels, width: s.width, height: s.height, cx: it.x, cy: it.y, boxPx: boxPx,
+                    res.append((it.id, it.x, it.y, it.boxPx, renderThumb(pixels: s.pixels, width: s.width, height: s.height, cx: it.x, cy: it.y, boxPx: it.boxPx,
                                                               out: GalleryModel.outPx, lo: win.lo, hi: win.hi, smoothSigma: smooth, invert: invert)))
                 }
                 done += list.count
                 DispatchQueue.main.async {
                     guard let self, self.token == tk else { return }
-                    for r in res { self.cache[r.0] = (r.1, r.2, r.3) }
+                    for r in res { self.cache[r.0] = (r.1, r.2, r.3, r.4) }
                     self.progress = done < total ? "Rendering crops… \(done) / \(total)" : nil
                     self.revision += 1
                 }
@@ -172,11 +173,11 @@ final class GalleryModel: ObservableObject {
     /// Synchronous variant for tests: renders every missing crop using the loader.
     func renderAllSync() {
         for (key, list) in Dictionary(grouping: items.filter { $0.thumb == nil }, by: { $0.key }) {
-            let src: (pixels: [Float], width: Int, height: Int)? = (key == pc.currentKey && !pc.pixels.isEmpty) ? (pc.pixels, Int(pc.imageSize.width), Int(pc.imageSize.height)) : loader?(pc.store.root, pc.store.keyResolver().isSessions ? pc.store.url(forKey: key).path : key)
+            let src: (pixels: [Float], width: Int, height: Int)? = (key == pc.currentKey && !pc.pixels.isEmpty) ? (pc.pixels, Int(pc.imageSize.width), Int(pc.imageSize.height)) : loader?(pc.store.root, pc.store.keyResolver().loaderKey(key))
             guard let s = src else { continue }
             let win = robustWindow(s.pixels)
             for it in list {
-                cache[it.id] = (it.x, it.y, renderThumb(pixels: s.pixels, width: s.width, height: s.height, cx: it.x, cy: it.y, boxPx: pc.boxPx,
+                cache[it.id] = (it.x, it.y, it.boxPx, renderThumb(pixels: s.pixels, width: s.width, height: s.height, cx: it.x, cy: it.y, boxPx: it.boxPx,
                                                        out: GalleryModel.outPx, lo: win.lo, hi: win.hi, smoothSigma: smooth, invert: invert))
             }
         }

@@ -1,4 +1,4 @@
-// Logic tests of the phone client with jsdom and a mock of the Mac API (see docs/PHONE_API.md).
+// Logic tests of the phone client with jsdom and a mock of the Mac API.
 // Run:  cd Tests/phone && npm install jsdom && node client.test.js
 // Layout, touch feel and real image rendering are not covered: those need a phone.
 const fs = require('fs'), path = require('path');

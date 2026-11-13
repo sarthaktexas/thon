@@ -11,11 +11,14 @@ final class InteractiveMTKView: MTKView {
     private(set) var peeking = false
     private var resignObserver: NSObjectProtocol?
     var picker: PickController?
+    var sweep: CropSession?                 // the crop editor: while active it owns the left mouse button
     var measure: MeasureState?
     private var measureDown = false         // a ruler gesture (not an Option-pan) is in progress
     private var measureOn: Bool { measure?.enabled ?? false }
     private var pickDown: CGPoint?          // mouse-down location in view points while a pick gesture is active
     private var pickerOn: Bool { picker?.enabled ?? false }
+    private var sweepDown: CGPoint?         // mouse-down location in view points while a crop-editor gesture is active
+    private var sweepOn: Bool { sweep?.active ?? false }
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -53,6 +56,11 @@ final class InteractiveMTKView: MTKView {
             m.mouseDown(at: imagePoint(pixelPoint(event)), radiusPx: hitRadiusPx)
             return
         }
+        if !peeking, let cs = sweep, cs.active {
+            sweepDown = convert(event.locationInWindow, from: nil)
+            cs.pointerDown(at: pickPoint(event), tolerancePx: hitRadiusPx, region: event.modifierFlags.contains(.option))
+            return
+        }
         if !peeking, let p = picker, p.enabled {
             pickDown = convert(event.locationInWindow, from: nil)
             p.mouseDown(at: pickPoint(event), radiusPx: hitRadiusPx, shift: event.modifierFlags.contains(.shift))
@@ -66,7 +74,13 @@ final class InteractiveMTKView: MTKView {
             cursor.set(image: imagePoint(pixelPoint(event)))
             return
         }
-        if let p = picker, p.enabled, let down = pickDown {
+        if let cs = sweep, cs.active, let down = sweepDown {
+            let now = convert(event.locationInWindow, from: nil)
+            switch cs.pointerDragged(to: pickPoint(event), movedPoints: hypot(Double(now.x - down.x), Double(now.y - down.y))) {
+            case .pan: break
+            case .none, .handled: cursor.set(image: imagePoint(pixelPoint(event))); return
+            }
+        } else if let p = picker, p.enabled, let down = pickDown {
             let now = convert(event.locationInWindow, from: nil)
             let mode = p.mouseDragged(to: pickPoint(event), movedPoints: hypot(Double(now.x - down.x), Double(now.y - down.y)),
                                       shift: event.modifierFlags.contains(.shift))
@@ -82,6 +96,11 @@ final class InteractiveMTKView: MTKView {
             measureDown = false
             return
         }
+        if let cs = sweep, sweepDown != nil {
+            cs.pointerUp(at: pickPoint(event))
+            sweepDown = nil
+            return
+        }
         if let p = picker, p.enabled, pickDown != nil {
             p.mouseUp(at: pickPoint(event), shift: event.modifierFlags.contains(.shift))
         }
@@ -89,11 +108,12 @@ final class InteractiveMTKView: MTKView {
     }
     override func rightMouseDown(with event: NSEvent) {
         if !peeking, let m = measure, m.enabled { m.rightClick(at: imagePoint(pixelPoint(event)), radiusPx: hitRadiusPx); return }
-        if !peeking, let p = picker, p.enabled { p.rightClick(at: pickPoint(event), radiusPx: hitRadiusPx) }
+        if !peeking, let cs = sweep, cs.active { cs.rightClick(at: pickPoint(event), tolerancePx: hitRadiusPx) }
+        else if !peeking, let p = picker, p.enabled { p.rightClick(at: pickPoint(event), radiusPx: hitRadiusPx) }
         else { super.rightMouseDown(with: event) }
     }
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: (pickerOn || measureOn) ? .crosshair : .arrow)
+        addCursorRect(bounds, cursor: (pickerOn || measureOn || sweepOn) ? .crosshair : .arrow)
     }
     override func mouseMoved(with event: NSEvent) { cursor.set(image: imagePoint(pixelPoint(event))) }
     override func mouseExited(with event: NSEvent) { cursor.set(image: nil) }
@@ -110,6 +130,9 @@ final class InteractiveMTKView: MTKView {
         cursor.set(image: imagePoint(pixelPoint(event)))
     }
     override func magnify(with event: NSEvent) {
+        // crop editor: pinching over a circle resizes it; anywhere else it zooms as usual
+        if !peeking, let cs = sweep, cs.active,
+           cs.pinch(at: pickPoint(event), tolerancePx: hitRadiusPx, scale: 1 + Double(event.magnification), began: event.phase.contains(.began)) { return }
         state.setZoom(state.zoom * (1 + Double(event.magnification)), about: pixelPoint(event))
     }
     override func keyDown(with event: NSEvent) {
@@ -160,6 +183,7 @@ struct MicrographView: NSViewRepresentable {
         v.onKey = { [weak model] e in model?.handleKey(e) ?? false }
         v.onPeek = { [weak model] on in model?.overlaysHidden = on }
         v.picker = model.picks
+        v.sweep = model.picks.crops
         v.measure = model.measure
         context.coordinator.attach(v)
         return v
@@ -187,6 +211,9 @@ struct MicrographView: NSViewRepresentable {
             r.onProcessedStats = { [weak model] st in model?.applyProcessedStats(st) }
             model.picks.$enabled
                 .sink { [weak view] _ in DispatchQueue.main.async { view?.window?.invalidateCursorRects(for: view!) } }
+                .store(in: &bag)
+            model.picks.crops.$active
+                .sink { [weak view] _ in DispatchQueue.main.async { if let view { view.window?.invalidateCursorRects(for: view) } } }
                 .store(in: &bag)
             model.measure.$enabled
                 .sink { [weak view] _ in DispatchQueue.main.async { view?.window?.invalidateCursorRects(for: view!) } }

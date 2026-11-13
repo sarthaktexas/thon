@@ -5,12 +5,14 @@ struct PicksTab: View {
     @ObservedObject var pc: PickController
     @ObservedObject var store: PickStore
     @ObservedObject var units = UnitSettings.shared
+    @ObservedObject var engines = EngineSettings.shared
 
     private var key: String? { pc.currentKey }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
+                if pc.crops.active { CropPanel(model: model, pc: pc, cs: pc.crops, store: store) }
                 modeCard
                 findCard
                 reviewCard
@@ -33,7 +35,8 @@ struct PicksTab: View {
             HStack {
                 Toggle("Pick mode (P)", isOn: $pc.enabled)
                 Spacer()
-                Button { model.showCrops = true } label: { Label("Crop editor", systemImage: "viewfinder.circle") }.controlSize(.small)
+                Button { model.toggleCrops() } label: { Label(pc.crops.active ? "Leave crop editor" : "Crop editor", systemImage: "viewfinder.circle") }.controlSize(.small)
+                    .help("Go through the micrograph one section at a time (⌥⌘T)")
             }
             HStack {
                 Toggle("Markers (V)", isOn: $pc.showMarkers)
@@ -69,27 +72,43 @@ struct PicksTab: View {
                 Text(", / . : resize selection (or default)").font(.caption2).foregroundStyle(.secondary)
             }
             Divider()
-            Picker("Engine", selection: $pc.engine) { ForEach(PickEngine.allCases) { Text($0.rawValue).tag($0) } }
-                .pickerStyle(.segmented).labelsHidden()
-                .onChange(of: pc.engine) { _, _ in pc.autoLive = false; pc.autoMessage = nil }
-            if pc.engine == .builtin {
+            // Topaz and CryoSegNet are offered only when switched on in Preferences (⌘,)
+            let engine = pc.effectiveEngine
+            if engines.enabled {
+                Picker("Engine", selection: $pc.engine) { ForEach(PickEngine.allCases) { Text($0.rawValue).tag($0) } }
+                    .pickerStyle(.segmented).labelsHidden()
+                    .onChange(of: pc.engine) { _, _ in pc.autoLive = false; pc.autoMessage = nil }
+            }
+            if engine == .builtin {
                 Picker("Method", selection: ap.method) { ForEach(PickMethod.allCases) { Text($0.rawValue).tag($0) } }
                     .pickerStyle(.segmented).labelsHidden()
             }
             Toggle("Particles are brighter than background", isOn: ap.bright)
-            if pc.engine == .builtin { slider("Score threshold (robust z)", ap.zThreshold, 2...12, "%.1f") }
-            else { EngineSetupView(engine: pc.engine) }
+            if engine == .builtin { slider("Score threshold (robust z)", ap.zThreshold, 2...12, "%.1f") }
+            else { EngineSetupView(engine: engine) }
             HStack {
                 Button { pc.runFind() } label: { Label(pc.autoBusy ? "Working…" : "Find particles", systemImage: "sparkles") }
                     .buttonStyle(.borderedProminent)
                     .disabled(pc.autoBusy || key == nil)
-                if pc.engine == .builtin {
+                if engine == .builtin {
                     Toggle("Live", isOn: $pc.autoLive).toggleStyle(.checkbox).help("Re-run automatically when a setting changes")
                 }
                 if pc.autoBusy { ProgressView().controlSize(.small) }
             }
             if let m = pc.autoMessage { Text(m).font(.caption).foregroundStyle(.secondary) }
-            if pc.engine == .builtin { DisclosureGroup("More settings") {
+            if engine == .builtin { DisclosureGroup("Try a range of sizes") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("Sweep diameters and boxes", isOn: $pc.sweepOn).onChange(of: pc.sweepOn) { _, _ in pc.applySweepText() }
+                    TextField("Diameters (nm): 12, 16, 20  or  10:30:5", text: $pc.sweepDiameterText)
+                        .textFieldStyle(.roundedBorder).disabled(!pc.sweepOn).onSubmit { pc.applySweepText() }
+                    TextField("Boxes (nm): blank = follow diameter", text: $pc.sweepBoxText)
+                        .textFieldStyle(.roundedBorder).disabled(!pc.sweepOn).onSubmit { pc.applySweepText() }
+                    if let e = pc.sweepError { Text(e).font(.caption).foregroundStyle(.red) }
+                    Text("Each size is searched in turn; where sizes overlap the best score wins. Every candidate keeps its own diameter and box (shown, cropped and exported at that size). Blank boxes keep the project's box : diameter ratio; one box applies to all; or give one per diameter. The Particle diameter above is not used while this is on. Press Return or Find particles to apply.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }.padding(.top, 4)
+            } }
+            if engine == .builtin { DisclosureGroup("More settings") {
                 VStack(alignment: .leading, spacing: 6) {
                     slider("Min separation × diameter", Binding(get: { pc.autoParams.minSepNm == 0 ? 0.9 : pc.autoParams.minSepNm / max(store.project.params.diameterNm, 1) },
                                                                 set: { pc.autoParams.minSepNm = $0 * store.project.params.diameterNm }), 0.3...2, "%.2f")
@@ -344,14 +363,13 @@ struct LoupeCard: View {
                             let scale = Double(side) / Double(2 * half)
                             let x0 = Double(x - half), y0 = Double(y - half)
                             let sel = pc.selection
-                            let boxPts = pc.boxPx * scale
                             Canvas { ctx, _ in
                                 for p in pc.visiblePicks {
                                     // array index -> crop coordinates (pixel centre = +0.5), then points
                                     let c = CGPoint(x: (p.x - x0 + 0.5) * scale, y: (p.y - y0 + 0.5) * scale)
                                     let r = pc.diameterPx(p) * scale / 2
                                     guard CGRect(x: -r, y: -r, width: Double(side) + 2 * r, height: Double(side) + 2 * r).contains(c) else { continue }
-                                    PickOverlay.drawPick(&ctx, p, at: c, radius: r, pc: pc, store: pc.store, selected: sel.contains(p.id), boxPts: boxPts)
+                                    PickOverlay.drawPick(&ctx, p, at: c, radius: r, pc: pc, store: pc.store, selected: sel.contains(p.id), boxPts: pc.boxPx(p) * scale)
                                 }
                             }
                             .frame(width: side, height: side).allowsHitTesting(false)

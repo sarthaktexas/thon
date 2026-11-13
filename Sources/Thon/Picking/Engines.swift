@@ -38,14 +38,20 @@ struct EngineConfig: Codable, Equatable {
 final class EngineSettings: ObservableObject {
     static let shared = EngineSettings()
     private static let key = "pickEngineConfig"
-    @Published var config: EngineConfig { didSet { if config != oldValue { Self.save(config) } } }
+    static let enabledKey = "pickEnginesEnabled"
+    private let defaults: UserDefaults
+    @Published var config: EngineConfig { didSet { if config != oldValue { save(config) } } }
+    /// Preferences ▸ Pickers: whether Topaz and CryoSegNet are offered in the Picks tab at all (off by default; the built-in picker is always there).
+    @Published var enabled: Bool { didSet { if enabled != oldValue { defaults.set(enabled, forKey: Self.enabledKey) } } }
 
-    init() {
-        if let d = UserDefaults.standard.data(forKey: Self.key), let c = try? JSONDecoder().decode(EngineConfig.self, from: d) { config = c }
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if let d = defaults.data(forKey: Self.key), let c = try? JSONDecoder().decode(EngineConfig.self, from: d) { config = c }
         else { config = EngineConfig() }
+        enabled = defaults.bool(forKey: Self.enabledKey)
     }
-    private static func save(_ c: EngineConfig) {
-        if let d = try? JSONEncoder().encode(c) { UserDefaults.standard.set(d, forKey: key) }
+    private func save(_ c: EngineConfig) {
+        if let d = try? JSONEncoder().encode(c) { defaults.set(d, forKey: Self.key) }
     }
 
     /// Fills empty fields from what is found on disk; never overwrites something the user typed.

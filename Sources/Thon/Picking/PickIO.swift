@@ -57,13 +57,28 @@ struct ImportPlan {
 }
 
 enum PickImporter {
+    /// File name without extension. A frame key `x.mrcs#f3` gives `x_f003`, so every frame of a stack has its own name.
     static func stem(_ s: String) -> String {
-        let name = (s as NSString).lastPathComponent
-        return (name as NSString).deletingPathExtension
+        let (b, f) = FrameKey.split(s)
+        let name = (b as NSString).lastPathComponent
+        let st = (name as NSString).deletingPathExtension
+        return f.map { st + String(format: "_f%03d", $0 + 1) } ?? st
+    }
+
+    /// RELION names one frame of a stack `NNNNNN@path` (1-based). Returns the plain name and the 0-based frame.
+    static func splitStackName(_ name: String) -> (path: String, frame: Int?) {
+        guard let at = name.firstIndex(of: "@"), at != name.startIndex, name[..<at].allSatisfy({ $0.isASCII && $0.isNumber }),
+              let n = Int(name[..<at]), n >= 1 else { return (name, nil) }
+        return (String(name[name.index(after: at)...]), n - 1)
     }
 
     /// Maps a micrograph name or path (or a coordinate-file stem such as "F4a_000_core") to a known micrograph key.
-    static func resolveKey(_ name: String, known: [String]) -> String? {
+    static func resolveKey(_ rawName: String, known: [String]) -> String? {
+        let (name, frame) = splitStackName(rawName)
+        if let f = frame {                                        // "000003@stack.mrcs": that frame of the stack
+            guard let b = resolveKey(name, known: known.map { FrameKey.base($0) }) else { return nil }
+            return FrameKey.make(b, frame: f)
+        }
         if known.contains(name) { return name }
         let base = (name as NSString).lastPathComponent
         let byBase = known.filter { ($0 as NSString).lastPathComponent == base }
@@ -364,10 +379,14 @@ enum PickExporter {
         }
         for (key, rec) in project.mics { if let id = effSession(key, rec), !stems[id, default: []].insert(PickImporter.stem(key)).inserted { split.insert(id) } }
         /// What RELION / CSV get as the micrograph name: the folder-project key, or for a session the file's path relative to the project file's folder when inside it, else absolute.
-        func rawName(_ key: String) -> String {
-            guard km.sessionID(ofKey: key) != nil else { return key }
-            let u = km.url(forKey: key).standardizedFileURL.path, r = root.standardizedFileURL.path
-            return u.hasPrefix(r + "/") ? String(u.dropFirst(r.count + 1)) : u
+        func rawName(_ rawKey: String) -> String {
+            let (key, frame) = FrameKey.split(rawKey)
+            var name = key
+            if km.sessionID(ofKey: key) != nil {
+                let u = km.url(forKey: key).standardizedFileURL.path, r = root.standardizedFileURL.path
+                name = u.hasPrefix(r + "/") ? String(u.dropFirst(r.count + 1)) : u
+            }
+            return frame.map { String(format: "%06d@", $0 + 1) + name } ?? name       // one frame of a stack: RELION's N@file
         }
         let rootPath = root.standardizedFileURL.path, outPath = outDir.standardizedFileURL.path
         let prefix = options.coordPrefix ?? (outPath.hasPrefix(rootPath + "/") ? String(outPath.dropFirst(rootPath.count + 1)) : outPath)
@@ -375,6 +394,7 @@ enum PickExporter {
         struct Row { var ds, mid, raw: String; var angpix: Double?; var n: Int; var p: Pick }
         var rows: [Row] = []
         var perFile: [String: [(Double, Double)]] = [:]           // "<ds>/<label>/<mid>" -> points
+        var perBox: [String: [Double]] = [:]                      // same keys: box (nm) of each point
         var lists: [String: [(String, String)]] = [:]             // "<ds>/<label>" -> (mic key, mid)
         var order: [String] = []
         for (key, rec) in project.mics.sorted(by: { $0.key < $1.key }) {
@@ -389,15 +409,17 @@ enum PickExporter {
                 let k = "\(ds)/\(p.label)/\(mid)"
                 if perFile[k] == nil { order.append(k); lists["\(ds)/\(p.label)", default: []].append((key, mid)) }
                 perFile[k, default: []].append((p.x, p.y))
+                perBox[k, default: []].append(p.boxNm ?? project.params.boxNm)
                 sum.totals[p.label, default: 0] += 1
             }
         }
         if options.formats.contains(.csv) {
             var lines = ["dataset,micrograph,raw,angpix,pick,x_px,y_px,label,box_nm,box_px,score,source,maybe"]
             for r in rows {
-                let boxPx = r.angpix.map { fmt1(project.params.boxNm * 10 / $0) } ?? ""
+                let boxNm = r.p.boxNm ?? project.params.boxNm
+                let boxPx = r.angpix.map { fmt1(boxNm * 10 / $0) } ?? ""
                 lines.append([csvField(r.ds), csvField(r.mid), csvField(r.raw), fmtAngpix(r.angpix), String(r.n), fmt1(r.p.x), fmt1(r.p.y), csvField(r.p.label),
-                              String(project.params.boxNm), boxPx, r.p.score.map { String(format: "%.3f", $0) } ?? "", r.p.source.rawValue, r.p.isMaybe ? "1" : "0"].joined(separator: ","))
+                              String(boxNm), boxPx, r.p.score.map { String(format: "%.3f", $0) } ?? "", r.p.source.rawValue, r.p.isMaybe ? "1" : "0"].joined(separator: ","))
             }
             try write(lines.joined(separator: "\n") + "\n", "all_picks.csv")
         }
@@ -415,8 +437,11 @@ enum PickExporter {
             for k in order {
                 let parts = k.split(separator: "/").map(String.init)
                 let key = lists["\(parts[0])/\(parts[1])"]!.first { $0.1 == parts[2] }!.0
-                let bx = project.params.boxNm * 10 / (project.mics[key]?.angpix ?? 1)
-                let body = perFile[k]!.map { String(format: "%.0f\t%.0f\t%.0f\t%.0f\n", $0.0 - bx / 2, $0.1 - bx / 2, bx, bx) }.joined()
+                let ap = project.mics[key]?.angpix ?? 1
+                let body = zip(perFile[k]!, perBox[k]!).map { pt, nm in
+                    let bx = nm * 10 / ap
+                    return String(format: "%.0f\t%.0f\t%.0f\t%.0f\n", pt.0 - bx / 2, pt.1 - bx / 2, bx, bx)
+                }.joined()
                 try write(body, "box/\(parts[0])/\(parts[1])/\(parts[2]).box")
             }
         }

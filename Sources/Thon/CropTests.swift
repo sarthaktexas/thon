@@ -31,7 +31,7 @@ func testCrops(_ t: inout TestRun) {
     t.check(cs.tilesTotal > 0 && cs.queue.count == cs.tilesTotal && cs.current?.id == 0, "tiles with candidates are queued, scan order starts at the top left", "\(cs.tilesTotal)")
     t.check(["t1", "t2", "t3"].allSatisfy { id in cs.items.contains { $0.id == id && $0.untouched && !$0.isNew && $0.level == .sure } }, "the first crop shows its candidates, untouched and green")
     t.check(cs.hit(x: 82, y: 101, tolerancePx: 2)?.id == "t1" && cs.hit(x: 400, y: 400, tolerancePx: 2) == nil, "hit test finds the circle under the pointer, nothing on empty ground")
-    t.check(cs.cropImage(out: 128)?.count == 128 * 128, "the crop renders")
+    t.check(cs.currentRect.map { $0.width == cs.sidePx && $0.midX == cs.current!.cx } == true, "the section on screen has a rectangle (the viewer dims everything else)")
 
     // --- edits
     cs.beginEdit(); cs.move("t1", to: CGPoint(x: 60, y: 100))
@@ -94,17 +94,115 @@ func testCrops(_ t: inout TestRun) {
     cs.rebuild()
     t.check(cs.reviewedCount == 1 && !cs.queue.contains { $0.id == 0 }, "reviewed crops stay reviewed when the editor is reopened")
 
-    // --- zoom out brings the wider window's circles in
+    // --- sections are remembered in the project and can be dragged over
+    t.section("crop editor: sections")
+    t.check(c.store.sections(k).count == 1 && c.store.sections(k)[0].rect.width == cs.sidePx, "a confirmed section is stored as a region of the micrograph")
+    t.check(CropSession.coverage(of: CGRect(x: 0, y: 0, width: 100, height: 100), in: [DoneRegion(x0: 0, y0: 0, x1: 100, y1: 50)]) > 0.45 && CropSession.coverage(of: CGRect(x: 0, y: 0, width: 100, height: 100), in: [DoneRegion(x0: 0, y0: 0, x1: 100, y1: 50)]) < 0.55, "coverage measures how much of a rectangle is inside the regions")
+    if let d = try? c.store.encoded(), let back = try? PickStore.decode(d) {
+        t.check(back.mics[k]?.sections == c.store.sections(k) && back.mics[k]?.sections?.isEmpty == false, "confirmed sections survive saving and reopening the project")
+    } else { t.check(false, "the project encodes and decodes") }
     guard let tile = cs.current else { t.check(false, "a second crop is still waiting"); return }
-    _ = c.store.perform(k, "far") { l in l.append(Pick(id: "far", x: tile.cx + 1.2 * cs.sidePx / 2 * 1.2, y: tile.cy, label: c.activeLabel, score: 9, source: .auto, status: .candidate)) }
-    cs.zoomOut = true
-    t.check(cs.items.contains { $0.id == "far" } && cs.windowPx == 2 * cs.sidePx, "zoom out ×2 adds the circles of the wider window")
-    cs.zoomOut = false
-    t.check(cs.zoomLevel == 0 && cs.windowPx == cs.sidePx, "zoom out off returns to the normal window")
-    cs.zoomLevel = 99
-    t.check(cs.zoomLevel == cs.maxZoomLevel && cs.maxZoomLevel >= 1 && cs.windowPx == cs.sidePx * Double(1 << cs.maxZoomLevel), "zoom out is capped at the largest level", "\(cs.zoomLevel)")
-    cs.zoomLevel = -3
-    t.check(cs.zoomLevel == 0, "zoom out cannot go below normal")
+    let q0 = cs.queue.count
+    let sectionsBefore = c.store.sections(k).count
+    // a region you drag over finished ground: its circles are confirmed, the tiles it covers leave the queue
+    let u1Tile = cs.queue.first { cs.picksIn($0, key: k).contains { $0.id == "u1" } }
+    cs.markRegionDone(CGRect(x: 480, y: 480, width: 4, height: 4))
+    t.check(c.store.sections(k).count == sectionsBefore, "a speck is not a region")
+    cs.markRegionDone(CGRect(x: 440, y: 440, width: 120, height: 120))
+    t.check(c.store.pick("u1", in: k)?.status == .accepted && c.store.sections(k).count == sectionsBefore + 1, "marking a region confirms the circles in it and stores it")
+    t.check(c.store.pick("u2", in: k)?.status == .candidate, "circles outside the region stay as they are")
+    t.check(c.store.undoName(k) == "Mark region done" && rr.samples["m.mrc@u1"]?.y == 1, "a region is one undoable edit and teaches the assistant")
+    cs.undo()
+    t.check(c.store.pick("u1", in: k)?.status == .candidate && c.store.sections(k).count == sectionsBefore && rr.samples["m.mrc@u1"] == nil, "undo takes the region back (picks, mark and training example)")
+    t.check(cs.queue.count == q0 && u1Tile.map { cs.queue.contains($0) } != false, "and the sections it covered are queued again")
+    // a drag that covers the section on screen finishes it
+    let covers = CGRect(x: tile.cx - cs.sidePx / 2 - 10, y: tile.cy - cs.sidePx / 2 - 10, width: cs.sidePx + 20, height: cs.sidePx + 20)
+    cs.markRegionDone(covers)
+    t.check(cs.current != tile && !cs.queue.contains(tile), "a region over the whole section on screen moves on to the next one")
+    cs.undo()
+    t.check(cs.current == tile, "undo brings that section back")
+
+    // --- the pointer: what the viewer's mouse does
+    t.section("crop editor: pointer")
+    cs.active = true
+    t.check(c.enabled && cs.active, "turning the editor on turns pick mode on")
+    let cur = cs.current!
+    /// A spot of the section on screen with no circle within 3 px, `skip` spots in from the bottom right.
+    func emptySpot(_ skip: Int = 0) -> CGPoint {
+        var found = 0
+        var y = cur.cy + cs.sidePx / 2 - 30
+        while y > cur.cy - cs.sidePx / 2 + 30 {
+            var x = cur.cx + cs.sidePx / 2 - 30
+            while x > cur.cx - cs.sidePx / 2 + 30 {
+                if cs.hit(x: x, y: y, tolerancePx: 25) == nil { if found == skip { return CGPoint(x: x, y: y) }; found += 1 }
+                x -= 10
+            }
+            y -= 10
+        }
+        return CGPoint(x: cur.cx, y: cur.cy)
+    }
+    let free = emptySpot()
+    let nBefore = cs.items.count
+    cs.pointerDown(at: free, tolerancePx: 3, region: false)
+    t.check(cs.pointerDragged(to: free, movedPoints: 0) == .none, "a press that has not moved yet does nothing")
+    cs.pointerUp(at: free)
+    t.check(cs.items.count == nBefore + 1 && cs.selected != nil, "a click on empty ground inside the section adds a circle")
+    let farOut = CGPoint(x: cur.cx + cs.sidePx / 2 + 40, y: cur.cy)
+    let nNow = cs.items.count
+    cs.pointerDown(at: farOut, tolerancePx: 3, region: false); cs.pointerUp(at: farOut)
+    t.check(cs.items.count == nNow && cs.selected == nil, "a click outside the section adds nothing")
+    let dropped = CGPoint(x: free.x - 12, y: free.y)
+    cs.pointerDown(at: free, tolerancePx: 3, region: false)
+    t.check(cs.pointerDragged(to: dropped, movedPoints: 20) == .handled, "dragging a circle moves it")
+    cs.pointerUp(at: dropped)
+    t.check(cs.items.contains { abs($0.x - dropped.x) < 1e-6 && $0.id == cs.selected }, "the circle ends where it was dropped")
+    let target = cs.items.first { $0.id == cs.selected }!
+    let spot = CGPoint(x: target.x, y: target.y)
+    let t0 = Date()
+    cs.pointerDown(at: spot, tolerancePx: 3, region: false); cs.pointerUp(at: spot, now: t0)
+    cs.pointerDown(at: spot, tolerancePx: 3, region: false); cs.pointerUp(at: spot, now: t0.addingTimeInterval(2))
+    t.check(cs.visibleItems.contains { $0.id == target.id }, "two clicks far apart in time are not a double click")
+    cs.pointerDown(at: spot, tolerancePx: 3, region: false); cs.pointerUp(at: spot, now: t0.addingTimeInterval(2.2))
+    t.check(!cs.visibleItems.contains { $0.id == target.id }, "a double click removes the circle")
+    cs.undo()
+    t.check(cs.visibleItems.contains { $0.id == target.id }, "and Z brings it back")
+    cs.rightClick(at: spot, tolerancePx: 3)
+    t.check(!cs.visibleItems.contains { $0.id == target.id }, "a right click removes the circle")
+    cs.undo(); cs.selected = nil
+    let bare = emptySpot(3)
+    cs.pointerDown(at: bare, tolerancePx: 3, region: false)
+    t.check(cs.pointerDragged(to: CGPoint(x: bare.x + 40, y: bare.y), movedPoints: 40) == .pan, "dragging empty ground pans the viewer")
+    cs.pointerUp(at: CGPoint(x: bare.x + 40, y: bare.y))
+    t.check(cs.selected == nil && cs.pinch(at: CGPoint(x: -999, y: -999), tolerancePx: 3, scale: 1.1, began: true) == false, "a pinch away from any circle (none selected) zooms the viewer instead")
+    let big = cs.add(x: bare.x, y: bare.y)!
+    let d0 = cs.items.first { $0.id == big }!.diameterNm
+    t.check(cs.pinch(at: .zero, tolerancePx: 3, scale: 1.25, began: true) && cs.items.first { $0.id == big }!.diameterNm > d0, "a pinch with a circle selected resizes it")
+    cs.remove(big)
+    // option-drag (or the region tool) marks a region instead of panning
+    let n0 = c.store.sections(k).count
+    let regionA = CGPoint(x: 650, y: 600), regionB = CGPoint(x: 760, y: 690)           // holds u2 at (700, 640)
+    cs.pointerDown(at: regionA, tolerancePx: 3, region: true)
+    t.check(cs.pointerDragged(to: regionB, movedPoints: 100) == .handled && cs.regionRect != nil, "an option-drag draws a region")
+    cs.pointerUp(at: regionB)
+    t.check(cs.regionRect == nil && c.store.sections(k).count == n0 + 1 && c.store.pick("u2", in: k)?.status == .accepted, "letting go marks the region done")
+    cs.undo()
+    t.check(c.store.pick("u2", in: k)?.status == .candidate && c.store.sections(k).count == n0, "and Z takes it back")
+    cs.regionTool = true
+    cs.pointerDown(at: regionA, tolerancePx: 3, region: false)
+    t.check(cs.pointerDragged(to: regionB, movedPoints: 100) == .handled, "with the region tool on, a plain drag draws a region")
+    cs.pointerUp(at: regionB); cs.undo(); cs.regionTool = false
+    cs.clearSections()
+    t.check(c.store.sections(k).isEmpty && cs.reviewedCount == 0, "clearing the marks makes every section pending again")
+    t.check(cs.frameTarget() == nil, "without a viewer there is nothing to frame")
+    let vs = ViewState(); vs.viewPixels = CGSize(width: 1000, height: 800); vs.imageSize = CGSize(width: 1024, height: 1024)
+    cs.view = vs
+    cs.frame()
+    let want = 0.9 * 800 / cs.sidePx
+    t.check(abs(vs.zoom - want) < 1e-9 && vs.center == CGPoint(x: cs.current!.cx + 0.5, y: cs.current!.cy + 0.5), "the viewer is framed on the section: its centre, filling 90 % of the shorter side")
+    vs.zoom = 99; vs.center = .zero; vs.fit()
+    t.check(abs(vs.zoom - want) < 1e-9, "Fit (and the fit after a new image loads) frames the section while the editor is on")
+    cs.active = false
+    t.check(!cs.active && cs.frameTarget() == nil && abs(vs.zoom - vs.fitZoom()) < 1e-9 && vs.center == CGPoint(x: 512, y: 512), "turned off, the viewer fits the whole image again")
 
     // --- reject is not a type; deleting is the only way to reject
     t.section("crop editor: no reject type")

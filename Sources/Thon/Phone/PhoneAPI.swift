@@ -42,7 +42,7 @@ final class PhoneJPEGCache {
 }
 
 /// The phone API. Every method must run on the main thread (it reads and mutates `PickStore` / `SwipeSession`);
-/// JPEG rendering is returned as `PhoneResponse.deferred` so the server can run it elsewhere. See docs/PHONE_API.md.
+/// JPEG rendering is returned as `PhoneResponse.deferred` so the server can run it elsewhere.
 final class PhoneAPI {
     static let version = 1
     unowned let host: PhoneHost
@@ -125,7 +125,7 @@ final class PhoneAPI {
     /// Keeps the swipe deck in step with the micrograph that is open in Thon (the Mac's swipe sheet may be closed).
     func ensureDeck() {
         if let p = pendingKey {
-            if pc.currentKey == p && !host.phoneIsLoading { pendingKey = nil }
+            if pc.currentKey.map(FrameKey.base) == p && !host.phoneIsLoading { pendingKey = nil }
             else if Date().timeIntervalSince(pendingSince) > 30 { pendingKey = nil }
         }
         if store.scheme.label(pc.activeLabel) == nil { pc.activeLabel = store.scheme.firstID }     // the scheme was edited on the Mac

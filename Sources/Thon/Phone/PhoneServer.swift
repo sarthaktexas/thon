@@ -17,14 +17,21 @@ final class PhoneController: ObservableObject {
     @Published private(set) var token: String
     @Published private(set) var lastSeen: Date?
     @Published private(set) var requests = 0
+    @Published private(set) var directPhones: [String] = []     // phones connected over the direct link
+    @Published private(set) var pairingCode = ""                // one-time code for a new phone on the direct link
+    @Published private(set) var directError: String?
+    @Published var directLink: Bool {                           // advertise to the ThonSwipe iPhone app
+        didSet { UserDefaults.standard.set(directLink, forKey: Self.directKey) }
+    }
     @Published var port: Int {
         didSet { UserDefaults.standard.set(port, forKey: Self.portKey) }
     }
 
-    static let portKey = "phone.port", tokenKey = "phone.token"
+    static let portKey = "phone.port", tokenKey = "phone.token", directKey = "phone.direct"
     static let defaultPort = 8431
 
     private var listener: NWListener?
+    private var direct: PhoneDirectLink?
     private var api: PhoneAPI?
     private let netQueue = DispatchQueue(label: "thon.phone.net", qos: .userInitiated)
     private let renderQueue = DispatchQueue(label: "thon.phone.render", qos: .userInitiated)    // one render at a time (CPU cap)
@@ -32,6 +39,7 @@ final class PhoneController: ObservableObject {
     private init() {
         let p = UserDefaults.standard.integer(forKey: Self.portKey)
         port = (1024...65535).contains(p) ? p : Self.defaultPort
+        directLink = UserDefaults.standard.object(forKey: Self.directKey) as? Bool ?? true
         if let t = UserDefaults.standard.string(forKey: Self.tokenKey), t.count >= 32 { token = t }
         else { token = Self.makeToken(); UserDefaults.standard.set(token, forKey: Self.tokenKey) }
     }
@@ -69,6 +77,12 @@ final class PhoneController: ObservableObject {
             l.newConnectionHandler = { [weak self] c in self?.accept(c) }
             listener = l
             l.start(queue: netQueue)
+            if directLink {
+                let d = PhoneDirectLink(api: api, render: renderQueue)
+                d.onChange = { [weak self] phones, code, err in self?.directPhones = phones; self?.pairingCode = code; self?.directError = err }
+                direct = d
+                d.start()
+            }
         } catch {
             self.error = "Could not listen on port \(port): \(error.localizedDescription)"; enabled = false
         }
@@ -76,6 +90,7 @@ final class PhoneController: ObservableObject {
 
     func stop() {
         listener?.cancel(); listener = nil; api = nil
+        direct?.stop(); direct = nil; directPhones = []; pairingCode = ""; directError = nil
         running = false; enabled = false
     }
 
@@ -97,9 +112,10 @@ final class PhoneController: ObservableObject {
 
     // MARK: addresses
 
-    /// IPv4 addresses of the Wi-Fi / Ethernet interfaces (en*), private ranges first.
-    static func lanAddresses() -> [String] {
-        var out: [String] = []
+    /// IPv4 addresses a phone could reach, with the interface they belong to.
+    /// en* = Wi-Fi, Ethernet, iPhone USB / Personal Hotspot; bridge* = this Mac's own shared network (Internet Sharing) or Thunderbolt Bridge.
+    static func lanInterfaces() -> [(name: String, address: String)] {
+        var out: [(name: String, address: String)] = []
         var ifap: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifap) == 0, let first = ifap else { return [] }
         defer { freeifaddrs(ifap) }
@@ -107,14 +123,17 @@ final class PhoneController: ObservableObject {
         while let a = p {
             let i = a.pointee
             p = i.ifa_next
+            let name = String(cString: i.ifa_name)
             guard let sa = i.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET), (i.ifa_flags & UInt32(IFF_UP)) != 0,
-                  (i.ifa_flags & UInt32(IFF_LOOPBACK)) == 0, String(cString: i.ifa_name).hasPrefix("en") else { continue }
+                  (i.ifa_flags & UInt32(IFF_LOOPBACK)) == 0, name.hasPrefix("en") || name.hasPrefix("bridge") else { continue }
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            if getnameinfo(sa, socklen_t(sa.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 { out.append(String(cString: host)) }
+            if getnameinfo(sa, socklen_t(sa.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 { out.append((name, String(cString: host))) }
         }
         func rank(_ s: String) -> Int { s.hasPrefix("192.168.") || s.hasPrefix("10.") || s.hasPrefix("172.") ? 0 : (s.hasPrefix("169.254.") ? 2 : 1) }
-        return out.sorted { rank($0) < rank($1) }
+        return out.sorted { rank($0.address) < rank($1.address) }
     }
+
+    static func lanAddresses() -> [String] { lanInterfaces().map { $0.address } }
 
     /// URLs a phone can open (with the token), best first.
     var urls: [String] {
@@ -123,6 +142,9 @@ final class PhoneController: ObservableObject {
         if hn.hasSuffix(".local") { u.append("http://\(hn):\(port)/?t=\(token)") }
         return u
     }
+
+    /// Link that opens in a browser on this Mac; if it works the server is fine and any failure on the phone is the network.
+    var localTestURL: URL? { URL(string: "http://127.0.0.1:\(port)/?t=\(token)") }
 
     static func iconData() -> Data? {
         guard let img = NSApp?.applicationIconImage else { return nil }
@@ -156,13 +178,9 @@ final class PhoneController: ObservableObject {
     private func dispatch(_ req: PhoneRequest, on c: NWConnection) {
         DispatchQueue.main.async { [weak self] in
             guard let self, let api = self.api else { self?.send(PhoneResponse(status: 503, contentType: "text/plain", body: Data()), on: c); return }
-            let resp = api.handle(req)
-            if resp.status != 401 { self.lastSeen = Date(); self.requests += 1 }
-            if let job = resp.deferred {
-                self.renderQueue.async { let r = job(); self.netQueue.async { self.send(r, on: c) } }
-            } else {
-                self.netQueue.async { self.send(resp, on: c) }
-            }
+            api.serve(req, render: self.renderQueue, reply: self.netQueue, handled: { [weak self] resp in
+                if resp.status != 401 { self?.lastSeen = Date(); self?.requests += 1 }
+            }) { [weak self] r in self?.send(r, on: c) }
         }
     }
 

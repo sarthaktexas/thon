@@ -25,7 +25,6 @@ struct ContentView: View {
         }
         .sheet(isPresented: $model.showGallery) { GalleryView(model: model) }
         .sheet(isPresented: $model.showSwipe) { SwipeView(model: model) }
-        .sheet(isPresented: $model.showCrops) { CropView(model: model) }
         .sheet(isPresented: $model.showSessions) { SessionsView(model: model, store: model.picks.store) }
         .alert("Thon", isPresented: Binding(get: { model.loadError != nil }, set: { if !$0 { model.loadError = nil } })) {
             Button("OK", role: .cancel) {}
@@ -241,7 +240,11 @@ struct ImagePane: View {
     var body: some View {
         ZStack {
             MicrographView(model: model)
-            PickOverlay(pc: model.picks, vs: model.view, store: model.picks.store)
+            PickOverlay(pc: model.picks, vs: model.view, store: model.picks.store, cs: model.picks.crops)
+                .opacity(model.overlaysHidden ? 0 : 1)
+            CropOverlay(cs: model.picks.crops, pc: model.picks, vs: model.view, store: model.picks.store)
+                .opacity(model.overlaysHidden ? 0 : 1)
+            CropPenPreview(cs: model.picks.crops, pc: model.picks, vs: model.view, store: model.picks.store, cursor: model.cursor)
                 .opacity(model.overlaysHidden ? 0 : 1)
             MeasureOverlay(measure: model.measure, vs: model.view, pixelSizeA: model.doc?.entry.pixelSizeA)
                 .opacity(model.overlaysHidden ? 0 : 1)
@@ -250,10 +253,38 @@ struct ImagePane: View {
             }
             if model.isLoading { ProgressView().controlSize(.large) }
         }
+        .overlay(alignment: .top) { StackHintBanner(model: model).padding(.top, 14) }
+        .animation(.default, value: model.stackHint)
+        .overlay(alignment: .bottom) { CropHUD(model: model, cs: model.picks.crops, pc: model.picks, store: model.picks.store).padding(.bottom, 14) }
         .overlay(alignment: .topLeading) { HeaderOverlay(model: model).padding(10).opacity(model.overlaysHidden ? 0 : 1) }
         .overlay(alignment: .bottomLeading) { ScaleBar(vs: model.view, pixelSizeA: model.doc?.entry.pixelSizeA).padding(14).opacity(model.overlaysHidden ? 0 : 1) }
         .overlay(alignment: .bottomTrailing) { Readout(cursor: model.cursor, vs: model.view, model: model).padding(10).opacity(model.overlaysHidden ? 0 : 1) }
         .background(Color(red: 0.075, green: 0.078, blue: 0.086))
+    }
+}
+
+/// "This looks like a SerialEM stack": offered once per file when it opens as the average of its frames.
+struct StackHintBanner: View {
+    @ObservedObject var model: AppModel
+    var body: some View {
+        if let h = model.stackHint {
+            HStack(spacing: 10) {
+                Image(systemName: "square.stack.3d.up").font(.title3)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("SerialEM stack, \(h.depth) frames").font(.callout.weight(.medium))
+                    Text("Shown as the average of its frames. Unpack it to pick each frame separately.").font(.caption).foregroundStyle(.secondary)
+                }
+                Button("Unpack") { model.setUnpacked(true) }.buttonStyle(.borderedProminent).controlSize(.small)
+                Button("Keep average") { model.stackHint = nil }.controlSize(.small)
+                Menu {
+                    Button("Don't suggest this again") { UserDefaults.standard.set(true, forKey: AppModel.stackHintOffKey); model.stackHint = nil }
+                } label: { Image(systemName: "ellipsis.circle") }.menuStyle(.borderlessButton).fixedSize()
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+            .shadow(color: .black.opacity(0.3), radius: 6, y: 2)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
     }
 }
 
@@ -262,7 +293,7 @@ struct HeaderOverlay: View {
     var body: some View {
         if let d = model.doc {
             VStack(alignment: .leading, spacing: 2) {
-                Text(d.url.lastPathComponent).font(.system(.callout, design: .monospaced).weight(.medium))
+                Text(d.url.lastPathComponent + (d.entry.depth > 1 ? (d.frame >= 0 ? "  ·  frame \(d.frame + 1)/\(d.entry.depth)" : "  ·  average of \(d.entry.depth) frames") : "")).font(.system(.callout, design: .monospaced).weight(.medium))
                 Text("\(d.entry.width) × \(d.entry.height) · \(d.entry.dataTypeName)" + (d.entry.pixelSizeA.map { String(format: " · %.4g Å/px", $0) } ?? " · uncalibrated"))
                     .font(.caption).foregroundStyle(.white.opacity(0.7))
             }
@@ -445,8 +476,19 @@ struct DisplayTab: View {
                 }
                 if let d = model.doc, d.entry.depth > 1 {
                     Card(title: "Stack") {
-                        Stepper("Frame \(model.frame + 1) / \(d.entry.depth)", value: $model.frame, in: 0...(d.entry.depth - 1))
-                            .onChange(of: model.frame) { _, _ in model.reloadFrame() }
+                        Picker("", selection: Binding(get: { model.frame >= 0 }, set: { model.setUnpacked($0) })) {
+                            Text("Average").tag(false)
+                            Text("Frames").tag(true)
+                        }.pickerStyle(.segmented).labelsHidden()
+                        if model.frame >= 0 {
+                            Stepper("Frame \(model.frame + 1) / \(d.entry.depth)", value: $model.frame, in: 0...(d.entry.depth - 1))
+                                .onChange(of: model.frame) { _, _ in model.reloadFrame() }
+                            Text("Each frame has its own picks. ⌥[ and ⌥] step through the frames. Picks made on the average belong to the whole file and show there.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text("Mean of all \(d.entry.depth) frames. Picks made here belong to the whole file." + (d.isSerialEM ? " This is a SerialEM stack: choose Frames to pick each frame separately." : " Choose Frames to pick each frame separately."))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 }
                 Card(title: "Keys") {

@@ -51,7 +51,7 @@ struct ThonApp: App {
                 Button("Export MRC (raw)…") { model.exportMRC(processed: false) }.keyboardShortcut("e", modifiers: [.command, .shift])
             }
             CommandMenu("Picks") {
-                Button("Undo Pick Edit") { model.picks.undo() }.keyboardShortcut("z")
+                Button("Undo Pick Edit") { if model.picks.crops.active { model.picks.crops.undo() } else { model.picks.undo() } }.keyboardShortcut("z")
                 Button("Redo Pick Edit") { model.picks.redo() }.keyboardShortcut("z", modifiers: [.command, .shift])
                 Divider()
                 Button("Select All Picks") { model.picks.selectAll() }.keyboardShortcut("a")
@@ -60,7 +60,7 @@ struct ThonApp: App {
                 Button("Dismiss All Candidates") { model.picks.dismissAllCandidates() }
                 Divider()
                 Button("Edit Labels…") { model.picks.openLabelEditor() }
-                Button("Crop Editor…") { model.picks.enabled = true; model.showCrops = true }.keyboardShortcut("t", modifiers: [.command, .option])
+                Button(model.picks.crops.active ? "Leave Crop Editor" : "Crop Editor") { model.toggleCrops() }.keyboardShortcut("t", modifiers: [.command, .option])
                 Button("Swipe Mode (classic)…") { model.showSwipe = true }
                 Button("Phone Swiper…") { PhoneController.shared.openPanel(model: model) }.keyboardShortcut("p", modifiers: [.command, .option])
                 Button("Gallery…") { model.showGallery = true }.keyboardShortcut("g", modifiers: [.command, .option])
@@ -78,6 +78,8 @@ struct ThonApp: App {
             CommandMenu("Navigate") {
                 Button("Next Exposure") { model.step(1) }.keyboardShortcut("]")
                 Button("Previous Exposure") { model.step(-1) }.keyboardShortcut("[")
+                Button("Next Frame") { model.stepFrame(1) }.keyboardShortcut("]", modifiers: .option)
+                Button("Previous Frame") { model.stepFrame(-1) }.keyboardShortcut("[", modifiers: .option)
             }
             CommandGroup(after: .toolbar) {
                 Button("Fit to Window") { model.view.fit() }.keyboardShortcut("0")
@@ -91,5 +93,6 @@ struct ThonApp: App {
                 Button("Toggle Inspector") { model.showInspector.toggle() }.keyboardShortcut("i", modifiers: [.command, .option])
             }
         }
+        Settings { PreferencesView() }
     }
 }

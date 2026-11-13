@@ -35,27 +35,49 @@ final class LoadedExposure: @unchecked Sendable {
     let stats: ImageStats
     let sections: [InfoSection]
     let tags: [TagRow]
-    let frame: Int
+    let frame: Int                  // 0-based frame; -1 = the average of all frames (a single image is its own average)
+    let isSerialEM: Bool            // the file's tags / header say it was written by SerialEM
 
     init(url: URL, frame: Int) throws {
         self.url = url
         if AppModel.isMRC(url) {
             let f = try MRCFile(url: url)
-            let px = try f.readPixels(frame: frame)
+            let px = try LoadedExposure.read(depth: f.depth, frame: frame) { try f.readPixels(frame: $0) }
             let st = ImageStats.compute(px)
             file = nil; mrc = f; pixels = px; stats = st; self.frame = frame
             entry = ImageInfo(width: f.width, height: f.height, depth: f.depth, pixelSizeA: f.header.pixelSizeA, dataTypeName: f.header.modeName)
             sections = f.buildSections(stats: st)
-            tags = f.flatTags()
+            let tg = f.flatTags()
+            tags = tg
+            isSerialEM = f.header.extType == "SERI" || tg.contains(where: LoadedExposure.mentionsSerialEM)
         } else {
             let f = try DMFile(url: url)
             guard let e = f.primaryImage else { throw DMError.unsupported("No image data found in \(url.lastPathComponent)") }
-            let px = try f.readPixels(e, frame: frame)
+            let px = try LoadedExposure.read(depth: e.depth, frame: frame) { try f.readPixels(e, frame: $0) }
             let st = ImageStats.compute(px)
             file = f; mrc = nil; entry = e.info; pixels = px; stats = st; self.frame = frame
             sections = f.buildSections(entry: e, stats: st)
-            tags = f.flatTags()
+            let tg = f.flatTags()
+            tags = tg
+            isSerialEM = tg.contains(where: LoadedExposure.mentionsSerialEM)
         }
+    }
+
+    /// One frame (`frame` >= 0), or the mean of all `depth` frames (`frame` < 0).
+    static func read(depth: Int, frame: Int, _ readFrame: (Int) throws -> [Float]) throws -> [Float] {
+        if frame >= 0 || depth <= 1 { return try readFrame(max(frame, 0)) }
+        var sum = try readFrame(0)
+        for i in 1..<depth {
+            let f = try readFrame(i)
+            for j in sum.indices { sum[j] += f[j] }
+        }
+        let inv = 1 / Float(depth)
+        for j in sum.indices { sum[j] *= inv }
+        return sum
+    }
+
+    static func mentionsSerialEM(_ t: TagRow) -> Bool {
+        t.path.range(of: "serialem", options: .caseInsensitive) != nil || t.value.range(of: "serialem", options: .caseInsensitive) != nil
     }
 }
 
@@ -73,7 +95,8 @@ final class AppModel: ObservableObject {
             let sel = selection
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.selection == sel else { return }
-                self.frame = 0
+                self.frame = self.pendingFrame ?? -1          // stacks open as the average of their frames (see `loadSelection`)
+                self.pendingFrame = nil
                 self.loadSelection()
             }
         }
@@ -86,7 +109,17 @@ final class AppModel: ObservableObject {
     @Published var loadError: String?
     @Published var isLoading = false
     @Published var generation = 0
-    @Published var frame = 0
+    /// -1 = the average of all frames of a stack (the default); 0... = that frame, picked on its own.
+    @Published var frame = -1
+    var pendingFrame: Int?
+    /// Stacks the user has unpacked into frames / explicitly kept averaged in this run. A stack that already has picks on its
+    /// frames opens unpacked, so those picks are never hidden.
+    var unpackedFiles = Set<URL>(), forcedAverage = Set<URL>()
+    struct StackHint: Equatable { let url: URL; let depth: Int }
+    /// Offered when a SerialEM stack opens as its average: unpack it to pick each frame separately.
+    @Published var stackHint: StackHint?
+    private var hintedFiles = Set<URL>()
+    static let stackHintOffKey = "stack.hintOff"
     @Published var showInspector = true
     @Published var fftNormalize = true
     @Published var ctfParams = CTFParams()
@@ -102,7 +135,6 @@ final class AppModel: ObservableObject {
     /// True while Space is held over the image: every overlay is hidden and clicks only pan.
     @Published var overlaysHidden = false
     @Published var showSwipe = false
-    @Published var showCrops = false
     @Published var showSessions = false
     @Published var collapsedSessions: Set<String> = []
 
@@ -119,6 +151,17 @@ final class AppModel: ObservableObject {
         picks.$enabled.sink { [weak self] on in
             if on { self?.inspectorTab = .picks; self?.showInspector = true }
         }.store(in: &picksBag)
+        // The crop editor lives in the main viewer: it frames sections there, follows the micrograph, and ends with pick mode.
+        picks.crops.view = view
+        picks.$currentKey.dropFirst().receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in if self?.picks.crops.active == true { self?.picks.crops.rebuild() } }.store(in: &picksBag)
+        picks.$autoBusy.dropFirst().receive(on: DispatchQueue.main)
+            .sink { [weak self] busy in if !busy, self?.picks.crops.active == true { self?.picks.crops.rebuild() } }.store(in: &picksBag)
+        picks.$enabled.sink { [weak self] on in if !on, self?.picks.crops.active == true { self?.picks.crops.active = false } }.store(in: &picksBag)
+        // Switching Topaz / CryoSegNet off in Preferences puts the picker back on the built-in engine.
+        picks.engineSettings.$enabled.sink { [weak self] on in
+            if !on, let p = self?.picks, p.engine != .builtin { p.engine = .builtin; p.autoLive = false; p.autoMessage = nil }
+        }.store(in: &picksBag)
         // The picker and the ruler both own the left mouse button, so only one can be active.
         picks.$enabled.sink { [weak self] on in if on { self?.measure.enabled = false } }.store(in: &picksBag)
         measure.$enabled.sink { [weak self] on in if on { self?.picks.enabled = false } }.store(in: &picksBag)
@@ -134,25 +177,35 @@ final class AppModel: ObservableObject {
     }()
 
     /// Raw pixels of a micrograph by project key (background use; no stats / tags).
-    nonisolated static func loadPixels(root: URL?, key: String) -> (pixels: [Float], width: Int, height: Int)? {
+    /// A frame key (`...#f3`) loads that frame; a plain key loads the whole file (the average of the frames of a stack).
+    nonisolated static func loadPixels(root: URL?, key rawKey: String) -> (pixels: [Float], width: Int, height: Int)? {
+        let (key, frame) = FrameKey.split(rawKey)
         let url = key.hasPrefix("/") ? URL(fileURLWithPath: key) : (root ?? URL(fileURLWithPath: "/")).appendingPathComponent(key)
+        let fr = frame ?? -1
         if isMRC(url) {
-            guard let f = try? MRCFile(url: url), let px = try? f.readPixels() else { return nil }
+            guard let f = try? MRCFile(url: url), let px = try? LoadedExposure.read(depth: f.depth, frame: fr, { try f.readPixels(frame: $0) }) else { return nil }
             return (px, f.width, f.height)
         }
-        guard let f = try? DMFile(url: url), let e = f.primaryImage, let px = try? f.readPixels(e, frame: 0) else { return nil }
+        guard let f = try? DMFile(url: url), let e = f.primaryImage,
+              let px = try? LoadedExposure.read(depth: e.depth, frame: fr, { try f.readPixels(e, frame: $0) }) else { return nil }
         return (px, e.width, e.height)
     }
 
     /// Opens micrograph `key` (if needed) and centers the view on the pick, zoomed so ~5 boxes fit across the view.
-    func goTo(key: String, x: Double, y: Double) {
+    func goTo(key rawKey: String, x: Double, y: Double) {
+        let (key, onFrame) = FrameKey.split(rawKey)
         showGallery = false
         let box = max(picks.boxPx, 8)
         let z = min(max(Double(min(view.viewPixels.width, view.viewPixels.height)) / (5 * box), 0.05), 32)
         let focus = CGPoint(x: x + 0.5, y: y + 0.5)
         guard let target = items.first(where: { picks.store.key(for: $0.url) == key })?.url else { loadError = "Micrograph \(key) is not in the open folder / project."; return }
-        if target == selection { view.center = focus; view.zoom = z }
-        else { view.pendingFocus = (focus, z); selection = target }
+        if let f = onFrame { unpackedFiles.insert(target); forcedAverage.remove(target); pendingFrame = f }
+        else { unpackedFiles.remove(target); forcedAverage.insert(target) }               // a pick on the whole file shows on the average
+        if target == selection {
+            view.center = focus; view.zoom = z
+            if let f = onFrame, f != frame { frame = f; pendingFrame = nil; loadSelection() }
+            else if onFrame == nil, frame >= 0 { frame = -1; loadSelection() }
+        } else { view.pendingFocus = (focus, z); selection = target }
     }
 
     // MARK: library
@@ -423,6 +476,8 @@ final class AppModel: ObservableObject {
 
     func loadSelection() {
         guard let url = selection else { return }
+        if frame < 0, !forcedAverage.contains(url),
+           unpackedFiles.contains(url) || picks.store.hasFramePicks(base: picks.store.key(for: url)) { frame = 0 }
         loadToken += 1
         let token = loadToken, fr = frame
         isLoading = true; loadError = nil
@@ -436,8 +491,13 @@ final class AppModel: ObservableObject {
                 view.applyAuto()
                 cursor.pixels = loaded.pixels; cursor.width = loaded.entry.width; cursor.height = loaded.entry.height
                 picks.pixels = loaded.pixels; picks.currentURL = url
-                measure.setImage(key: url.path)
-                picks.setMicrograph(key: picks.store.key(for: url), width: loaded.entry.width, height: loaded.entry.height, pixelSizeA: loaded.entry.pixelSizeA)
+                let onFrame = loaded.entry.depth > 1 && fr >= 0 ? fr : nil
+                measure.setImage(key: FrameKey.make(url.path, frame: onFrame))
+                picks.setMicrograph(key: picks.store.key(for: url, frame: onFrame), width: loaded.entry.width, height: loaded.entry.height, pixelSizeA: loaded.entry.pixelSizeA)
+                if loaded.entry.depth > 1, loaded.isSerialEM, fr < 0, !UserDefaults.standard.bool(forKey: Self.stackHintOffKey), hintedFiles.insert(url).inserted {
+                    stackHint = StackHint(url: url, depth: loaded.entry.depth)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in if self?.stackHint?.url == url { self?.stackHint = nil } }
+                } else if stackHint?.url != url { stackHint = nil }
                 generation += 1
                 isLoading = false
                 if let kv = loaded.file?.quickMeta().voltageKV { ctfParams.voltageKV = kv }
@@ -454,6 +514,20 @@ final class AppModel: ObservableObject {
 
     func reloadFrame() { loadSelection() }
 
+    /// Unpack the open stack into frames (each is picked on its own) or go back to the average of all frames.
+    func setUnpacked(_ on: Bool) {
+        guard let url = selection else { return }
+        stackHint = nil
+        if on { unpackedFiles.insert(url); forcedAverage.remove(url); frame = 0 }
+        else { unpackedFiles.remove(url); forcedAverage.insert(url); frame = -1 }
+        loadSelection()
+    }
+
+    func stepFrame(_ d: Int) {
+        guard let depth = doc?.entry.depth, depth > 1, frame >= 0 else { return }
+        let f = min(max(frame + d, 0), depth - 1)
+        if f != frame { frame = f; loadSelection() }
+    }
     /// Recompute the power spectrum for the current image (box size changed).
     func recomputeFFT() {
         guard let d = doc else { return }
@@ -494,7 +568,39 @@ final class AppModel: ObservableObject {
 
     // MARK: interaction
 
+    /// Turns the crop editor on or off (⌥⌘T, the Picks tab, the Picks menu).
+    func toggleCrops() { picks.crops.active.toggle() }
+
+    /// Keys of the crop editor while it is on. Return = Done, Esc = deselect / leave, Delete = remove the selected circle,
+    /// Tab = next type, ↑ ↓ , . = resize the selected circle, Z = undo, type hotkeys set the type of the selected circle.
+    private func handleCropKey(_ e: NSEvent) -> Bool {
+        let cs = picks.crops
+        let chars = (e.charactersIgnoringModifiers ?? "").lowercased()
+        let mods = e.modifierFlags
+        if mods.contains(.command) { return false }
+        switch e.keyCode {
+        case 36, 76: if !cs.done { cs.commit() }; return true
+        case 53: if cs.selected != nil { cs.selected = nil } else { cs.active = false }; return true
+        case 51, 117: if let s = cs.selected { cs.remove(s) }; return true
+        case 48: if let s = cs.selected { cs.cycleLabel(s) } else if let i = cs.typeLabels.firstIndex(where: { $0.id == cs.penLabelID }) { picks.activeLabel = cs.typeLabels[(i + 1) % cs.typeLabels.count].id }; return true
+        case 126, 125:
+            guard let s = cs.selected, let it = cs.items.first(where: { $0.id == s && !$0.removed }) else { return false }
+            cs.beginEdit(); cs.setDiameter(s, nm: it.diameterNm * (e.keyCode == 126 ? 1.06 : 1 / 1.06)); return true
+        default: break
+        }
+        if let l = picks.store.scheme.label(forKey: chars), l.exported { picks.activeLabel = l.id; if let s = cs.selected { cs.setLabel(s, l.id) }; return true }
+        switch chars {
+        case "z": cs.undo(); return true
+        case ",", ".":
+            guard let s = cs.selected, let it = cs.items.first(where: { $0.id == s && !$0.removed }) else { return true }
+            cs.beginEdit(); cs.setDiameter(s, nm: max(1, it.diameterNm + (chars == "." ? 1 : -1))); return true
+        case "s": cs.skip(); return true
+        default: return false
+        }
+    }
+
     func handleKey(_ e: NSEvent) -> Bool {
+        if picks.crops.active, handleCropKey(e) { return true }
         switch e.keyCode {
         case 123, 126: step(-1); return true
         case 124, 125: step(1); return true
@@ -503,7 +609,7 @@ final class AppModel: ObservableObject {
         let chars = e.charactersIgnoringModifiers ?? ""
         let mods = e.modifierFlags
         if !mods.contains(.command), measure.handleKey(keyCode: e.keyCode) { return true }
-        if picks.handleKey(chars: chars, keyCode: e.keyCode, shift: mods.contains(.shift), command: mods.contains(.command)) { return true }
+        if !picks.crops.active, picks.handleKey(chars: chars, keyCode: e.keyCode, shift: mods.contains(.shift), command: mods.contains(.command)) { return true }
         switch chars.lowercased() {
         case "m": measure.enabled.toggle(); return true
         case "p": picks.enabled.toggle(); return true
