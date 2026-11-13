@@ -75,6 +75,14 @@ struct ThonApp: App {
             CommandMenu("Measure") {
                 MeasureMenuItems(measure: model.measure)
             }
+            CommandMenu("Tag") {
+                ForEach(FinderTag.allCases) { tag in
+                    Button { model.toggleTag(tag) } label: { Label { Text("Tag " + tag.name) } icon: { Image(nsImage: tag.menuImage) } }
+                        .keyboardShortcut(KeyEquivalent(Character(tag.shortcutDigit)), modifiers: [.command, .option])
+                }
+                Divider()
+                Button("Clear Tags") { model.clearTags() }.keyboardShortcut("0", modifiers: [.command, .option])
+            }
             CommandMenu("Navigate") {
                 Button("Next Exposure") { model.step(1) }.keyboardShortcut("]")
                 Button("Previous Exposure") { model.step(-1) }.keyboardShortcut("[")

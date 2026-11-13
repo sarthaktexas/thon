@@ -76,6 +76,7 @@ final class PickStore: ObservableObject {
     @Published private(set) var dirty = false
     @Published private(set) var lastSaved: Date?
     @Published var lastError: String?
+    let tagChanges = TagChanges()
 
     private(set) var root: URL?                            // project folder (for a .thon project: the folder containing the file)
     private(set) var projectURL: URL?
@@ -418,6 +419,27 @@ final class PickStore: ObservableObject {
         guard project.mics[key]?.sections != nil else { return }
         mutateRecord(key) { $0.sections = nil }; touch(key, structural: false)
     }
+    // colour tags (micrographs and frames; not part of the pick undo history)
+    func tags(_ key: String) -> [FinderTag] { (project.mics[key]?.tags ?? []).compactMap(FinderTag.init(rawValue:)) }
+    func setTag(_ key: String, _ tag: FinderTag, on: Bool) {
+        var l = project.mics[key]?.tags ?? []
+        guard l.contains(tag.rawValue) != on else { return }
+        if on { l.append(tag.rawValue) } else { l.removeAll { $0 == tag.rawValue } }
+        mutateRecord(key) { $0.tags = l.isEmpty ? nil : l }
+        pruneEmpty(key); touch(key, structural: false); tagChanges.bump()
+    }
+    func toggleTag(_ key: String, _ tag: FinderTag) { setTag(key, tag, on: !tags(key).contains(tag)) }
+    func clearTags(_ key: String) {
+        guard project.mics[key]?.tags != nil else { return }
+        mutateRecord(key) { $0.tags = nil }
+        pruneEmpty(key); touch(key, structural: false); tagChanges.bump()
+    }
+    /// Keys (micrographs and frames) that carry `tag`.
+    func keys(tagged tag: FinderTag) -> Set<String> {
+        Set(project.mics.filter { $0.value.tags?.contains(tag.rawValue) == true }.map { $0.key })
+    }
+    private func pruneEmpty(_ key: String) { if project.mics[key] == MicRecord() { project.mics[key] = nil } }
+
     func setSwipe(_ key: String, _ log: SwipeLog?) { mutateRecord(key) { $0.swipe = log }; touch(key, structural: false) }
     func setAutoParams(_ key: String, _ a: AutoParams?) { mutateRecord(key) { $0.auto = a }; touch(key, structural: false) }
 

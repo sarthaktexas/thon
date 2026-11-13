@@ -10,6 +10,9 @@ struct ExposureItem: Identifiable, Hashable {
     var id: URL { url }
 }
 
+/// A row of the sidebar: a file (a stack shows as its average) or one frame of a stack.
+enum SidebarID: Hashable { case file(URL), frame(URL, Int) }
+
 enum SortKey: String, CaseIterable, Identifiable {
     case name = "Name", time = "Acquired", mag = "Magnification"
     var id: String { rawValue }
@@ -119,6 +122,10 @@ final class AppModel: ObservableObject {
     /// Offered when a SerialEM stack opens as its average: unpack it to pick each frame separately.
     @Published var stackHint: StackHint?
     private var hintedFiles = Set<URL>()
+    /// Stacks whose frames are listed in the sidebar.
+    @Published var expandedStacks = Set<URL>()
+    /// Sidebar shows only what carries this tag (files with a tagged frame show those frames).
+    @Published var tagFilter: FinderTag?
     static let stackHintOffKey = "stack.hintOff"
     @Published var showInspector = true
     @Published var fftNormalize = true
@@ -199,7 +206,7 @@ final class AppModel: ObservableObject {
         let z = min(max(Double(min(view.viewPixels.width, view.viewPixels.height)) / (5 * box), 0.05), 32)
         let focus = CGPoint(x: x + 0.5, y: y + 0.5)
         guard let target = items.first(where: { picks.store.key(for: $0.url) == key })?.url else { loadError = "Micrograph \(key) is not in the open folder / project."; return }
-        if let f = onFrame { unpackedFiles.insert(target); forcedAverage.remove(target); pendingFrame = f }
+        if let f = onFrame { unpackedFiles.insert(target); forcedAverage.remove(target); expandedStacks.insert(target); pendingFrame = f }
         else { unpackedFiles.remove(target); forcedAverage.insert(target) }               // a pick on the whole file shows on the average
         if target == selection {
             view.center = focus; view.zoom = z
@@ -441,7 +448,7 @@ final class AppModel: ObservableObject {
                 var thumb: CGImage?
                 if AppModel.isMRC(item.url) {
                     guard let f = try? MRCFile(url: item.url) else { return }
-                    meta.width = f.width; meta.height = f.height; meta.pixelSizeA = f.header.pixelSizeA; meta.dataType = f.header.modeName
+                    meta.width = f.width; meta.height = f.height; meta.pixelSizeA = f.header.pixelSizeA; meta.dataType = f.header.modeName; meta.depth = f.depth
                     if let px = try? f.readPixels() { thumb = makeThumbnail(px, f.width, f.height) }
                 } else {
                     guard let f = try? DMFile(url: item.url) else { return }
@@ -467,9 +474,10 @@ final class AppModel: ObservableObject {
 
     var selectedIndex: Int? { items.firstIndex { $0.url == selection } }
     func step(_ d: Int) {
-        guard let i = selectedIndex else { return }
-        let j = min(max(i + d, 0), items.count - 1)
-        selection = items[j].url
+        let list = visibleItems(items)
+        guard let i = list.firstIndex(where: { $0.url == selection }) ?? (tagFilter == nil ? nil : (d > 0 ? -1 : list.count)) else { return }
+        let j = min(max(i + d, 0), list.count - 1)
+        if list.indices.contains(j) { selection = list[j].url }
     }
 
     // MARK: loading
@@ -496,7 +504,7 @@ final class AppModel: ObservableObject {
                 picks.setMicrograph(key: picks.store.key(for: url, frame: onFrame), width: loaded.entry.width, height: loaded.entry.height, pixelSizeA: loaded.entry.pixelSizeA)
                 if loaded.entry.depth > 1, loaded.isSerialEM, fr < 0, !UserDefaults.standard.bool(forKey: Self.stackHintOffKey), hintedFiles.insert(url).inserted {
                     stackHint = StackHint(url: url, depth: loaded.entry.depth)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in if self?.stackHint?.url == url { self?.stackHint = nil } }
+                    expireStackHint(for: url)
                 } else if stackHint?.url != url { stackHint = nil }
                 generation += 1
                 isLoading = false
@@ -514,11 +522,64 @@ final class AppModel: ObservableObject {
 
     func reloadFrame() { loadSelection() }
 
+    /// The SerialEM banner goes away by itself after 20 s (a method, so the closure is the only capture of `self`).
+    private func expireStackHint(for url: URL) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+            if self?.stackHint?.url == url { self?.stackHint = nil }
+        }
+    }
+
+    // MARK: sidebar: files and the frames of stacks
+
+    /// Frames in a file (1 for a single image; known once the file has been indexed).
+    func depth(of url: URL) -> Int { metas[url]?.depth ?? 1 }
+
+    /// The sidebar row that is open now.
+    var sidebarSelection: SidebarID? {
+        guard let u = selection else { return nil }
+        return frame >= 0 && depth(of: u) > 1 ? .frame(u, frame) : .file(u)
+    }
+
+    /// Open a sidebar row: a file opens as its average, a frame opens that frame on its own.
+    func select(_ id: SidebarID?) {
+        switch id {
+        case nil: selection = nil
+        case .file(let u)?:
+            unpackedFiles.remove(u); forcedAverage.insert(u)
+            if u == selection { if frame >= 0 { frame = -1; loadSelection() } } else { selection = u }
+        case .frame(let u, let n)?:
+            unpackedFiles.insert(u); forcedAverage.remove(u); expandedStacks.insert(u)
+            if u == selection { if frame != n { frame = n; loadSelection() } } else { pendingFrame = n; selection = u }
+        }
+    }
+
+    func toggleStack(_ url: URL) { if expandedStacks.contains(url) { expandedStacks.remove(url) } else { expandedStacks.insert(url) } }
+
+    /// Frames of `item` the sidebar lists: all of them while the stack is expanded, only the tagged ones under a tag filter.
+    func listedFrames(of url: URL, tagged: Set<String>?) -> [Int] {
+        let n = depth(of: url)
+        guard n > 1 else { return [] }
+        let base = picks.store.key(for: url)
+        if let tagged { return (0..<n).filter { tagged.contains(FrameKey.make(base, frame: $0)) } }
+        return expandedStacks.contains(url) ? Array(0..<n) : []
+    }
+
+    /// Files the sidebar lists under the tag filter (all of them without one).
+    func visibleItems(_ list: [ExposureItem]) -> [ExposureItem] {
+        guard let f = tagFilter else { return list }
+        let bases = Set(picks.store.keys(tagged: f).map(FrameKey.base))
+        return list.filter { bases.contains(picks.store.key(for: $0.url)) }
+    }
+
+    /// Tags of the image on screen (the average or the open frame); ⌥⌘1…7 toggle them.
+    func toggleTag(_ t: FinderTag) { if let k = picks.currentKey { picks.store.toggleTag(k, t) } }
+    func clearTags() { if let k = picks.currentKey { picks.store.clearTags(k) } }
+
     /// Unpack the open stack into frames (each is picked on its own) or go back to the average of all frames.
     func setUnpacked(_ on: Bool) {
         guard let url = selection else { return }
         stackHint = nil
-        if on { unpackedFiles.insert(url); forcedAverage.remove(url); frame = 0 }
+        if on { unpackedFiles.insert(url); forcedAverage.remove(url); expandedStacks.insert(url); frame = 0 }
         else { unpackedFiles.remove(url); forcedAverage.insert(url); frame = -1 }
         loadSelection()
     }

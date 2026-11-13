@@ -33,7 +33,7 @@ struct ContentView: View {
 
     private var mainWindow: some View {
         NavigationSplitView {
-            SidebarView()
+            SidebarView(tagChanges: model.picks.store.tagChanges)
                 .navigationSplitViewColumnWidth(min: 230, ideal: 270, max: 380)
         } detail: {
             ImagePane()
@@ -83,17 +83,66 @@ struct InvertToggle: View {
 
 // MARK: - Sidebar
 
+/// One file of the sidebar, followed by its frames when the stack is expanded (or by its tagged frames under a tag filter).
+/// A stack row opens its average; a frame row opens that frame on its own. Both take colour tags.
+@MainActor @ViewBuilder
+func sidebarEntry(model: AppModel, store: PickStore, item: ExposureItem, tagged: Set<String>?, inProject: Bool) -> some View {
+    let key = store.key(for: item.url)
+    let depth = model.depth(of: item.url)
+    ExposureRow(item: item, thumb: model.thumbs[item.url], meta: model.metas[item.url], tags: store.tags(key), depth: depth,
+                expanded: model.expandedStacks.contains(item.url) || tagged != nil, toggle: { model.toggleStack(item.url) })
+        .tag(SidebarID.file(item.url))
+        .contextMenu {
+            Menu("Tags") { TagMenuItems(store: store, key: key) }
+            if inProject {
+                Menu("Move to Session") {
+                    ForEach(store.project.sessions.filter { $0.id != item.session }) { t in
+                        Button(t.name) { model.moveMicrographs([item.url], to: t.id) }
+                    }
+                }
+                if store.originSessionID(key) != item.session {
+                    Button("Back to Its Own Session") { model.moveMicrographs([item.url], to: nil) }
+                }
+            }
+        }
+    ForEach(model.listedFrames(of: item.url, tagged: tagged), id: \.self) { n in
+        let fk = FrameKey.make(key, frame: n)
+        FrameRow(n: n, tags: store.tags(fk))
+            .tag(SidebarID.frame(item.url, n))
+            .contextMenu { Menu("Tags") { TagMenuItems(store: store, key: fk) } }
+    }
+}
+
+/// One frame of a stack in the sidebar.
+struct FrameRow: View {
+    let n: Int
+    let tags: [FinderTag]
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "photo").font(.caption).foregroundStyle(.secondary)
+            Text("Frame \(n + 1)").font(.system(.callout, design: .monospaced)).lineLimit(1)
+            Spacer(minLength: 4)
+            if !tags.isEmpty { TagDots(tags: tags) }
+        }
+        .padding(.leading, 64).padding(.vertical, 1)
+    }
+}
+
 struct SidebarView: View {
     @EnvironmentObject var model: AppModel
+    @ObservedObject var tagChanges: TagChanges      // redraw the dots when a tag changes
+
+    private var selectionBinding: Binding<SidebarID?> { Binding(get: { model.sidebarSelection }, set: { model.select($0) }) }
 
     var body: some View {
+        let store = model.picks.store
+        let tagged = model.tagFilter.map { store.keys(tagged: $0) }
         Group {
-            if model.isProject { ProjectList(store: model.picks.store) }
+            if model.isProject { ProjectList(store: store, tagChanges: tagChanges) }
             else {
-                List(selection: $model.selection) {
-                    ForEach(model.sortedItems) { item in
-                        ExposureRow(item: item, thumb: model.thumbs[item.url], meta: model.metas[item.url])
-                            .tag(item.url)
+                List(selection: selectionBinding) {
+                    ForEach(model.visibleItems(model.sortedItems)) { item in
+                        sidebarEntry(model: model, store: store, item: item, tagged: tagged, inProject: false)
                     }
                 }
                 .listStyle(.sidebar)
@@ -113,11 +162,26 @@ struct SidebarView: View {
                 Text("\(model.items.count) exposures").font(.callout).foregroundStyle(.secondary)
                     .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                 }
-                Picker("Sort by", selection: $model.sortKey) {
-                    ForEach(SortKey.allCases) { Text($0.rawValue).tag($0) }
+                HStack {
+                    Picker("Sort by", selection: $model.sortKey) {
+                        ForEach(SortKey.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Menu {
+                        Button((model.tagFilter == nil ? "✓  " : "") + "All") { model.tagFilter = nil }
+                        Divider()
+                        ForEach(FinderTag.allCases) { t in
+                            Button { model.tagFilter = t } label: {
+                                Label { Text(t.name + (model.tagFilter == t ? "  ✓" : "")) } icon: { Image(nsImage: t.menuImage) }
+                            }
+                        }
+                    } label: {
+                        if let f = model.tagFilter { HStack(spacing: 4) { Circle().fill(f.color).frame(width: 9, height: 9); Text(f.name) } }
+                        else { Image(systemName: "tag") }
+                    }
+                    .menuStyle(.borderlessButton).fixedSize().help("Show only micrographs and frames with a colour tag")
                 }
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10).padding(.vertical, 6)
@@ -140,24 +204,16 @@ struct SidebarView: View {
 struct ProjectList: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var store: PickStore
+    @ObservedObject var tagChanges: TagChanges
 
     var body: some View {
-        List(selection: $model.selection) {
+        let tagged = model.tagFilter.map { store.keys(tagged: $0) }
+        List(selection: Binding(get: { model.sidebarSelection }, set: { model.select($0) })) {
             ForEach(store.project.sessions) { s in
                 Section(isExpanded: Binding(get: { !model.collapsedSessions.contains(s.id) },
                                             set: { if $0 { model.collapsedSessions.remove(s.id) } else { model.collapsedSessions.insert(s.id) } })) {
-                    ForEach(model.sessionItems(s.id)) { item in
-                        ExposureRow(item: item, thumb: model.thumbs[item.url], meta: model.metas[item.url]).tag(item.url)
-                            .contextMenu {
-                                Menu("Move to Session") {
-                                    ForEach(store.project.sessions.filter { $0.id != item.session }) { t in
-                                        Button(t.name) { model.moveMicrographs([item.url], to: t.id) }
-                                    }
-                                }
-                                if store.originSessionID(store.key(for: item.url)) != item.session {
-                                    Button("Back to Its Own Session") { model.moveMicrographs([item.url], to: nil) }
-                                }
-                            }
+                    ForEach(model.visibleItems(model.sessionItems(s.id))) { item in
+                        sidebarEntry(model: model, store: store, item: item, tagged: tagged, inProject: true)
                     }
                 } header: {
                     SessionHeader(model: model, store: store, session: s)
@@ -201,6 +257,10 @@ struct ExposureRow: View {
     let item: ExposureItem
     let thumb: NSImage?
     let meta: ExposureMeta?
+    var tags: [FinderTag] = []
+    var depth = 1                       // frames in the file; a stack gets a chevron that lists them
+    var expanded = false
+    var toggle: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 10) {
@@ -210,8 +270,16 @@ struct ExposureRow: View {
             }
             .frame(width: 54, height: 54).clipped().clipShape(RoundedRectangle(cornerRadius: 3))
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.url.deletingPathExtension().lastPathComponent)
-                    .font(.system(.callout, design: .monospaced)).lineLimit(1).truncationMode(.middle)
+                HStack(spacing: 4) {
+                    if depth > 1 {
+                        Button { toggle?() } label: { Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption.weight(.semibold)).frame(width: 12) }
+                            .buttonStyle(.plain).help(expanded ? "Hide the frames" : "List the frames; pick each one separately")
+                    }
+                    Text(item.url.deletingPathExtension().lastPathComponent)
+                        .font(.system(.callout, design: .monospaced)).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 2)
+                    if !tags.isEmpty { TagDots(tags: tags) }
+                }
                 if let m = meta {
                     Text(rowLine(m)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     if let d = m.acquired {
@@ -228,6 +296,7 @@ struct ExposureRow: View {
         if let mag = m.indicatedMag { parts.append(mag >= 1000 ? String(format: "%gk×", mag / 1000) : String(format: "%g×", mag)) }
         if let p = m.pixelSizeA { parts.append(String(format: "%.3g Å/px", p)) }
         parts.append("\(m.width)×\(m.height)")
+        if m.depth > 1 { parts.append("\(m.depth) frames") }
         return parts.joined(separator: " · ")
     }
 }
@@ -256,7 +325,7 @@ struct ImagePane: View {
         .overlay(alignment: .top) { StackHintBanner(model: model).padding(.top, 14) }
         .animation(.default, value: model.stackHint)
         .overlay(alignment: .bottom) { CropHUD(model: model, cs: model.picks.crops, pc: model.picks, store: model.picks.store).padding(.bottom, 14) }
-        .overlay(alignment: .topLeading) { HeaderOverlay(model: model).padding(10).opacity(model.overlaysHidden ? 0 : 1) }
+        .overlay(alignment: .topLeading) { HeaderOverlay(model: model, tagChanges: model.picks.store.tagChanges).padding(10).opacity(model.overlaysHidden ? 0 : 1) }
         .overlay(alignment: .bottomLeading) { ScaleBar(vs: model.view, pixelSizeA: model.doc?.entry.pixelSizeA).padding(14).opacity(model.overlaysHidden ? 0 : 1) }
         .overlay(alignment: .bottomTrailing) { Readout(cursor: model.cursor, vs: model.view, model: model).padding(10).opacity(model.overlaysHidden ? 0 : 1) }
         .background(Color(red: 0.075, green: 0.078, blue: 0.086))
@@ -290,10 +359,14 @@ struct StackHintBanner: View {
 
 struct HeaderOverlay: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var tagChanges: TagChanges
     var body: some View {
         if let d = model.doc {
             VStack(alignment: .leading, spacing: 2) {
-                Text(d.url.lastPathComponent + (d.entry.depth > 1 ? (d.frame >= 0 ? "  ·  frame \(d.frame + 1)/\(d.entry.depth)" : "  ·  average of \(d.entry.depth) frames") : "")).font(.system(.callout, design: .monospaced).weight(.medium))
+                HStack(spacing: 6) {
+                    Text(d.url.lastPathComponent + (d.entry.depth > 1 ? (d.frame >= 0 ? "  ·  frame \(d.frame + 1)/\(d.entry.depth)" : "  ·  average of \(d.entry.depth) frames") : "")).font(.system(.callout, design: .monospaced).weight(.medium))
+                    if let k = model.picks.currentKey { TagDots(tags: model.picks.store.tags(k), size: 11) }
+                }
                 Text("\(d.entry.width) × \(d.entry.height) · \(d.entry.dataTypeName)" + (d.entry.pixelSizeA.map { String(format: " · %.4g Å/px", $0) } ?? " · uncalibrated"))
                     .font(.caption).foregroundStyle(.white.opacity(0.7))
             }

@@ -70,6 +70,7 @@ struct MicRecord: Codable, Equatable {
     var swipe: SwipeLog?             // card-deck review decisions (statistics / audit)
     var session: String?             // .thon projects: session this micrograph is listed / exported under (nil = the session whose folder holds the file)
     var sections: [DoneRegion]?      // crop editor: parts of the micrograph already gone through (nil = none)
+    var tags: [String]?              // colour tags (FinderTag raw values), in the order they were added (nil = none)
     init() {}
     init(from d: Decoder) throws {   // tolerant: hand-edited / older files may omit fields
         let c = try d.container(keyedBy: CodingKeys.self)
@@ -83,6 +84,7 @@ struct MicRecord: Codable, Equatable {
         swipe = try c.decodeIfPresent(SwipeLog.self, forKey: .swipe)
         session = try c.decodeIfPresent(String.self, forKey: .session)
         sections = try c.decodeIfPresent([DoneRegion].self, forKey: .sections)
+        tags = try c.decodeIfPresent([String].self, forKey: .tags)
     }
 }
 
