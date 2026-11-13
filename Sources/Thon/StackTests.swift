@@ -69,6 +69,29 @@ func testStacksAndSweep(_ t: inout TestRun) {
         t.check(box.contains("\t300\t300") && box.contains("\t150\t150"), "eman box size per pick", box)
     } catch { t.check(false, "export with frames threw", "\(error)") }
 
+    // --- colour tags
+    t.section("colour tags")
+    let ts = PickStore(); ts.saveDelay = 0
+    let tdir = testTempDir(); defer { try? fm.removeItem(at: tdir) }
+    ts.openProject(folder: tdir)
+    var rev = ts.tagChanges.rev
+    ts.toggleTag("g/a.mrcs", .red); ts.toggleTag("g/a.mrcs", .blue); ts.toggleTag("g/a.mrcs#f3", .red)
+    t.check(ts.tags("g/a.mrcs") == [.red, .blue] && ts.tags("g/a.mrcs#f3") == [.red] && ts.tags("g/a.mrcs#f2").isEmpty, "tags per micrograph and per frame, in the order added")
+    t.check(ts.tagChanges.rev != rev, "a tag change is announced to the sidebar"); rev = ts.tagChanges.rev
+    ts.toggleTag("g/a.mrcs", .red)
+    t.check(ts.tags("g/a.mrcs") == [.blue] && ts.keys(tagged: .red) == ["g/a.mrcs#f3"] && ts.keys(tagged: .blue) == ["g/a.mrcs"], "toggle off; keys(tagged:)")
+    t.check(Set(ts.keys(tagged: .red).map(FrameKey.base)) == ["g/a.mrcs"], "a tagged frame lists its file under the filter")
+    ts.clearTags("g/a.mrcs#f3")
+    t.check(ts.tags("g/a.mrcs#f3").isEmpty && ts.project.mics["g/a.mrcs#f3"] == nil, "clearing the only thing on a record removes the record")
+    ts.add(Pick(id: "p", x: 1, y: 1, label: "side"), to: "g/b.mrcs"); ts.toggleTag("g/b.mrcs", .green); ts.clearTags("g/b.mrcs")
+    t.check(ts.picks("g/b.mrcs").count == 1 && ts.project.mics["g/b.mrcs"] != nil, "clearing tags keeps the picks")
+    if let data = try? ts.encoded(), let back = try? PickStore.decode(data) {
+        t.check(back.mics["g/a.mrcs"]?.tags == ["blue"], "tags survive saving and loading the project")
+    } else { t.check(false, "project encodes") }
+    let legacy = try? JSONDecoder().decode(MicRecord.self, from: Data("{\"done\":true}".utf8))
+    t.check(legacy?.tags == nil && legacy?.done == true, "records without tags still load")
+    t.check(Set(FinderTag.allCases.map { $0.shortcutDigit }).count == FinderTag.allCases.count && FinderTag.allCases.count == 7, "seven tags, one shortcut digit each")
+
     // --- size sweep
     t.section("size sweep")
     t.check(SweepSpec.parse("12, 16 20") == [12, 16, 20] && SweepSpec.parse("10:30:5") == [10, 15, 20, 25, 30] && SweepSpec.parse("") == [] && SweepSpec.parse("20,10,20") == [10, 20], "sweep text: lists, ranges, blank, duplicates")

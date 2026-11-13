@@ -214,7 +214,7 @@ struct SortView: View {
                 if pending > 0 { Text("\(pending) still unsorted (sent to later)").foregroundStyle(.secondary) }
             }
             HStack {
-                Button("Next micrograph") { model.step(1) }.disabled((model.selectedIndex ?? 0) >= model.items.count - 1).keyboardShortcut(.defaultAction)
+                Button("Next micrograph") { model.step(1) }.disabled(!model.canStep(1)).keyboardShortcut(.defaultAction)
                 Button("Undo last") { so.undo() }.disabled(!so.canUndo)
             }
             Spacer()

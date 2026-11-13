@@ -32,6 +32,7 @@ struct ExposureMeta {
     var acquired: Date?
     var camera: String = ""
     var dataType: String = ""
+    var depth = 1                    // frames in the file
 }
 
 extension DMFile {
@@ -65,7 +66,7 @@ extension DMFile {
     func quickMeta() -> ExposureMeta {
         var m = ExposureMeta()
         guard let e = primaryImage else { return m }
-        m.width = e.width; m.height = e.height; m.pixelSizeA = e.pixelSizeA; m.dataType = e.dataTypeName
+        m.width = e.width; m.height = e.height; m.pixelSizeA = e.pixelSizeA; m.dataType = e.dataTypeName; m.depth = e.depth
         m.indicatedMag = number(e, [["Microscope Info", "Indicated Magnification"]])
         m.voltageKV = number(e, [["Microscope Info", "Voltage"]]).map { $0 / 1000 }
         m.exposureS = number(e, [["DataBar", "Exposure Time (s)"], ["Acquisition", "Parameters", "High Level", "Exposure (s)"]])

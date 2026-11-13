@@ -163,7 +163,7 @@ struct SwipeView: View {
                 }
             }
             HStack {
-                Button("Next micrograph") { model.step(1) }.disabled((model.selectedIndex ?? 0) >= model.items.count - 1).keyboardShortcut(.defaultAction)
+                Button("Next micrograph") { model.step(1) }.disabled(!model.canStep(1)).keyboardShortcut(.defaultAction)
                 Button("Undo last") { sw.undo() }.disabled(!sw.canUndo)
             }
             Spacer()

@@ -50,11 +50,11 @@ struct ContentView: View {
             }
             ToolbarItemGroup(placement: .principal) {
                 Button { model.step(-1) } label: { Image(systemName: "chevron.left") }
-                    .disabled((model.selectedIndex ?? 0) <= 0)
-                Text(model.selectedIndex.map { "\($0 + 1) / \(model.items.count)" } ?? "–")
+                    .disabled(!model.canStep(-1))
+                Text(model.positionTitle)
                     .monospacedDigit().frame(minWidth: 60)
                 Button { model.step(1) } label: { Image(systemName: "chevron.right") }
-                    .disabled((model.selectedIndex ?? 0) >= model.items.count - 1)
+                    .disabled(!model.canStep(1))
             }
             ToolbarItemGroup {
                 PickToggle(pc: model.picks)
@@ -89,8 +89,10 @@ struct InvertToggle: View {
 func sidebarEntry(model: AppModel, store: PickStore, item: ExposureItem, tagged: Set<String>?, inProject: Bool) -> some View {
     let key = store.key(for: item.url)
     let depth = model.depth(of: item.url)
+    let unpacked = model.isUnpacked(item.url)
     ExposureRow(item: item, thumb: model.thumbs[item.url], meta: model.metas[item.url], tags: store.tags(key), depth: depth,
-                expanded: model.expandedStacks.contains(item.url) || tagged != nil, toggle: { model.toggleStack(item.url) })
+                expanded: model.expandedStacks.contains(item.url) || tagged != nil || unpacked, unpacked: unpacked,
+                toggle: unpacked ? nil : { model.toggleStack(item.url) })
         .tag(SidebarID.file(item.url))
         .contextMenu {
             Menu("Tags") { TagMenuItems(store: store, key: key) }
@@ -260,6 +262,7 @@ struct ExposureRow: View {
     var tags: [FinderTag] = []
     var depth = 1                       // frames in the file; a stack gets a chevron that lists them
     var expanded = false
+    var unpacked = false                // an unpacked stack has no average to open: its frames are always listed
     var toggle: (() -> Void)?
 
     var body: some View {
@@ -271,7 +274,10 @@ struct ExposureRow: View {
             .frame(width: 54, height: 54).clipped().clipShape(RoundedRectangle(cornerRadius: 3))
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
-                    if depth > 1 {
+                    if depth > 1, unpacked {
+                        Image(systemName: "square.stack.3d.down.right").font(.caption).foregroundStyle(.secondary).frame(width: 12)
+                            .help("Unpacked: pick on its frames; the average is hidden")
+                    } else if depth > 1 {
                         Button { toggle?() } label: { Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption.weight(.semibold)).frame(width: 12) }
                             .buttonStyle(.plain).help(expanded ? "Hide the frames" : "List the frames; pick each one separately")
                     }
@@ -296,7 +302,7 @@ struct ExposureRow: View {
         if let mag = m.indicatedMag { parts.append(mag >= 1000 ? String(format: "%gk×", mag / 1000) : String(format: "%g×", mag)) }
         if let p = m.pixelSizeA { parts.append(String(format: "%.3g Å/px", p)) }
         parts.append("\(m.width)×\(m.height)")
-        if m.depth > 1 { parts.append("\(m.depth) frames") }
+        if m.depth > 1 { parts.append("\(m.depth) frames" + (unpacked ? ", unpacked" : "")) }
         return parts.joined(separator: " · ")
     }
 }
@@ -341,7 +347,7 @@ struct StackHintBanner: View {
                 Image(systemName: "square.stack.3d.up").font(.title3)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("SerialEM stack, \(h.depth) frames").font(.callout.weight(.medium))
-                    Text("Shown as the average of its frames. Unpack it to pick each frame separately.").font(.caption).foregroundStyle(.secondary)
+                    Text("Shown as the average of its frames. Unpack it to pick each frame separately; the average is then hidden.").font(.caption).foregroundStyle(.secondary)
                 }
                 Button("Unpack") { model.setUnpacked(true) }.buttonStyle(.borderedProminent).controlSize(.small)
                 Button("Keep average") { model.stackHint = nil }.controlSize(.small)
@@ -556,7 +562,7 @@ struct DisplayTab: View {
                         if model.frame >= 0 {
                             Stepper("Frame \(model.frame + 1) / \(d.entry.depth)", value: $model.frame, in: 0...(d.entry.depth - 1))
                                 .onChange(of: model.frame) { _, _ in model.reloadFrame() }
-                            Text("Each frame has its own picks. ⌥[ and ⌥] step through the frames. Picks made on the average belong to the whole file and show there.")
+                            Text("Unpacked: each frame has its own picks, and the average is hidden and cannot be picked on. ⌥[ and ⌥] step through the frames. Choose Average to show it again. Either choice is saved in the project.")
                                 .font(.caption).foregroundStyle(.secondary)
                         } else {
                             Text("Mean of all \(d.entry.depth) frames. Picks made here belong to the whole file." + (d.isSerialEM ? " This is a SerialEM stack: choose Frames to pick each frame separately." : " Choose Frames to pick each frame separately."))

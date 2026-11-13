@@ -116,8 +116,8 @@ struct CropHUD: View {
                 Text("All \(cs.tilesTotal) sections done").font(.callout)
                 Button("Mark micrograph done") { if let k = pc.currentKey { store.setDone(k, true) } }
                     .disabled(pc.currentKey.map { store.record($0).done } ?? true)
-                Button("Next micrograph") { model.step(1) }.buttonStyle(.borderedProminent)
-                    .disabled((model.selectedIndex ?? 0) >= model.items.count - 1).keyboardShortcut(.defaultAction)
+                Button(model.nextTitle) { model.step(1) }.buttonStyle(.borderedProminent)
+                    .disabled(!model.canStep(1)).keyboardShortcut(.defaultAction)
             } else {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Section \(cs.reviewedCount + 1) of \(cs.tilesTotal)").font(.callout.weight(.semibold)).monospacedDigit()
@@ -153,23 +153,27 @@ struct CropPanel: View {
     @ObservedObject var rr: Reranker
     @ObservedObject var units = UnitSettings.shared
     @State private var showOrdering = false
+    /// Inside the workflow's check step: no card around it.
+    var embedded = false
 
-    init(model: AppModel, pc: PickController, cs: CropSession, store: PickStore) {
-        self.model = model; self.pc = pc; self.cs = cs; self.store = store
+    init(model: AppModel, pc: PickController, cs: CropSession, store: PickStore, embedded: Bool = false) {
+        self.model = model; self.pc = pc; self.cs = cs; self.store = store; self.embedded = embedded
         self.cl = cs.classifier; self.rr = cs.rr
     }
 
     var body: some View {
-        Card(title: "Crop editor") {
-            VStack(alignment: .leading, spacing: 12) {
-                help
-                Divider()
-                circleSection
-                Divider()
-                sectionSection
-                Divider()
-                orderingSection
-            }
+        if embedded { content } else { Card(title: "Crop editor") { content } }
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            help
+            Divider()
+            circleSection
+            Divider()
+            sectionSection
+            Divider()
+            orderingSection
         }
     }
 

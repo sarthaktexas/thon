@@ -14,6 +14,7 @@ final class InteractiveMTKView: MTKView {
     var sweep: CropSession?                 // the crop editor: while active it owns the left mouse button
     var measure: MeasureState?
     private var measureDown = false         // a ruler gesture (not an Option-pan) is in progress
+    private var quickDown = false           // a ⌘-drag quick measurement is in progress (works in every tool)
     private var measureOn: Bool { measure?.enabled ?? false }
     private var pickDown: CGPoint?          // mouse-down location in view points while a pick gesture is active
     private var pickerOn: Bool { picker?.enabled ?? false }
@@ -50,6 +51,13 @@ final class InteractiveMTKView: MTKView {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        // Quick measurement: ⌘-drag from any tool. The tool in use is not changed, and the line goes with the next click.
+        if !peeking, event.modifierFlags.contains(.command), let m = measure {
+            quickDown = true
+            m.quickBegin(at: imagePoint(pixelPoint(event)))
+            return
+        }
+        measure?.quickClear()
         // Ruler: drag to measure; hold Option to pan instead.
         if !peeking, let m = measure, m.enabled, !event.modifierFlags.contains(.option) {
             measureDown = true
@@ -69,6 +77,11 @@ final class InteractiveMTKView: MTKView {
         if event.clickCount == 2 { state.fit() }
     }
     override func mouseDragged(with event: NSEvent) {
+        if quickDown, let m = measure {
+            m.quickDrag(to: imagePoint(pixelPoint(event)), constrain: event.modifierFlags.contains(.shift))
+            cursor.set(image: imagePoint(pixelPoint(event)))
+            return
+        }
         if measureDown, let m = measure {
             m.mouseDragged(to: imagePoint(pixelPoint(event)), constrain: event.modifierFlags.contains(.shift))
             cursor.set(image: imagePoint(pixelPoint(event)))
@@ -91,6 +104,11 @@ final class InteractiveMTKView: MTKView {
         cursor.set(image: imagePoint(pixelPoint(event)))
     }
     override func mouseUp(with event: NSEvent) {
+        if quickDown, let m = measure {
+            m.quickEnd(minLengthPx: max(hitRadiusPx * 0.4, 2))
+            quickDown = false
+            return
+        }
         if measureDown, let m = measure {
             m.mouseUp(at: imagePoint(pixelPoint(event)), radiusPx: hitRadiusPx)
             measureDown = false
@@ -107,6 +125,7 @@ final class InteractiveMTKView: MTKView {
         pickDown = nil
     }
     override func rightMouseDown(with event: NSEvent) {
+        measure?.quickClear()
         if !peeking, let m = measure, m.enabled { m.rightClick(at: imagePoint(pixelPoint(event)), radiusPx: hitRadiusPx); return }
         if !peeking, let cs = sweep, cs.active { cs.rightClick(at: pickPoint(event), tolerancePx: hitRadiusPx) }
         else if !peeking, let p = picker, p.enabled { p.rightClick(at: pickPoint(event), radiusPx: hitRadiusPx) }

@@ -71,6 +71,8 @@ struct MicRecord: Codable, Equatable {
     var session: String?             // .thon projects: session this micrograph is listed / exported under (nil = the session whose folder holds the file)
     var sections: [DoneRegion]?      // crop editor: parts of the micrograph already gone through (nil = none)
     var tags: [String]?              // colour tags (FinderTag raw values), in the order they were added (nil = none)
+    var unpacked: Bool?              // stacks: true = unpacked into frames (the average is hidden and cannot be picked), false = kept as the average, nil = never chosen
+    var flow: FlowMarks?             // picker workflow: which of the automatic / manual steps were done or skipped on this micrograph
     init() {}
     init(from d: Decoder) throws {   // tolerant: hand-edited / older files may omit fields
         let c = try d.container(keyedBy: CodingKeys.self)
@@ -85,6 +87,8 @@ struct MicRecord: Codable, Equatable {
         session = try c.decodeIfPresent(String.self, forKey: .session)
         sections = try c.decodeIfPresent([DoneRegion].self, forKey: .sections)
         tags = try c.decodeIfPresent([String].self, forKey: .tags)
+        unpacked = try c.decodeIfPresent(Bool.self, forKey: .unpacked)
+        flow = try c.decodeIfPresent(FlowMarks.self, forKey: .flow)
     }
 }
 
@@ -92,13 +96,25 @@ struct ProjectParams: Codable, Equatable {
     var boxNm = 29.0                 // extraction box (nm), as in the web picker
     var diameterNm = 20.0            // default marker / particle diameter (nm)
     var maybeFlag = false            // opt-in: enables the per-pick "maybe" flag (key ?)
+    /// Particle size range of the workflow's automatic step (nm). Both nil = every particle is about `diameterNm`.
+    /// When set, `diameterNm` is the geometric mean (the size a hand-placed circle starts with).
+    var sizeMinNm: Double?
+    var sizeMaxNm: Double?
+    /// true = the box is typed in (`boxNm`); nil / false = it follows the diameter (box : diameter ratio kept).
+    var boxCustom: Bool?
     init() {}
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
         boxNm = try c.decodeIfPresent(Double.self, forKey: .boxNm) ?? 29
         diameterNm = try c.decodeIfPresent(Double.self, forKey: .diameterNm) ?? 20
         maybeFlag = try c.decodeIfPresent(Bool.self, forKey: .maybeFlag) ?? false
+        sizeMinNm = try c.decodeIfPresent(Double.self, forKey: .sizeMinNm)
+        sizeMaxNm = try c.decodeIfPresent(Double.self, forKey: .sizeMaxNm)
+        boxCustom = try c.decodeIfPresent(Bool.self, forKey: .boxCustom)
     }
+    /// True when the workflow searches a range of sizes rather than one.
+    var hasSizeRange: Bool { if let a = sizeMinNm, let b = sizeMaxNm { return b > a * 1.0001 } else { return false } }
+    var isBoxCustom: Bool { boxCustom == true }
 }
 
 struct PickProject: Codable, Equatable {
@@ -124,4 +140,14 @@ struct PickProject: Codable, Equatable {
         mics = try c.decodeIfPresent([String: MicRecord].self, forKey: .mics) ?? [:]
         assist = try c.decodeIfPresent(Data.self, forKey: .assist)
     }
+
+    /// A stack is unpacked when the user said so (saved in the file); a stack from before this was saved counts as unpacked
+    /// when some frame has picks of its own, so those picks are never hidden.
+    func isUnpacked(base: String) -> Bool {
+        if let u = mics[base]?.unpacked { return u }
+        let pre = base + FrameKey.marker
+        return mics.contains { $0.key.hasPrefix(pre) && FrameKey.base($0.key) == base && !$0.value.picks.isEmpty }
+    }
+    /// The average of an unpacked stack: not shown and not pickable.
+    func isHiddenAverage(_ key: String) -> Bool { !FrameKey.isFrame(key) && isUnpacked(base: key) }
 }

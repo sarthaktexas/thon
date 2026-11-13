@@ -33,6 +33,7 @@ func runPickTests(_ args: [String]) -> Int32 {
     testAutoPicker(&t)
     testAutoIntegration(&t)
     testStacksAndSweep(&t)
+    testWorkflow(&t)
     testExternalPicker(&t)
     testEngines(&t)
     testAssist(&t)
@@ -48,6 +49,7 @@ func runPickTests(_ args: [String]) -> Int32 {
     testCrops(&t)
     testCTF(&t)
     testMeasureAndUnits(&t)
+    testQuickMeasureAndTools(&t)
     print("picktest: \(t.passed) passed, \(t.failed) failed")
     return t.failed == 0 ? 0 : 1
 }

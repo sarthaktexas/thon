@@ -27,6 +27,14 @@ final class PickController: ObservableObject {
     @Published var imageSize = CGSize.zero
     @Published var pixelSizeA: Double?
     @Published var currentKey: String?
+    /// The open image is the average of an unpacked stack: it is not shown, has no picks on screen and cannot be picked on.
+    @Published private(set) var averageBlocked = false
+
+    // workflow (see Workflow.swift)
+    /// The step open in the Picks tab. Opening the check turns the section-by-section editor on; leaving it turns it off.
+    @Published var flowStep = FlowStep.auto { didSet { if flowStep != oldValue { stepChanged(from: oldValue) } } }
+    @Published var editMessage: String?
+    var exportChoice: (root: URL?, folder: URL)?
 
     // auto-picker state
     @Published var autoParams = AutoParams()
@@ -71,6 +79,15 @@ final class PickController: ObservableObject {
         if let key { store.setMicInfo(key, width: width, height: height, angpix: pixelSizeA) }
         selection = []; boxRect = nil; drag = .idle
         if store.scheme.label(activeLabel) == nil { activeLabel = store.scheme.firstID }
+        refreshBlocked()
+        editMessage = nil
+        if let key, flowStep != .export { flowStep = store.flow(key).nextStep }
+    }
+
+    /// Re-reads whether the open image is the hidden average of an unpacked stack.
+    func refreshBlocked() {
+        let b = currentKey.map { store.project.isHiddenAverage($0) } ?? false
+        if b != averageBlocked { averageBlocked = b; selection = [] }
     }
 
     var effectiveAngpix: Double { pixelSizeA ?? 1 }
@@ -85,7 +102,7 @@ final class PickController: ObservableObject {
         if p.status == .candidate { return showCandidates && (p.score ?? .infinity) >= scoreCutoff }
         return true
     }
-    var visiblePicks: [Pick] { currentKey.map { store.picks($0).filter(isVisible) } ?? [] }
+    var visiblePicks: [Pick] { averageBlocked ? [] : (currentKey.map { store.picks($0).filter(isVisible) } ?? []) }
     var selectedPicks: [Pick] { currentKey.map { k in store.picks(k).filter { selection.contains($0.id) } } ?? [] }
 
     func pruneSelection() {
@@ -119,7 +136,7 @@ final class PickController: ObservableObject {
     private var drag = Drag.idle
 
     func mouseDown(at p: CGPoint, radiusPx: Double, shift: Bool) {
-        guard currentKey != nil else { return }
+        guard currentKey != nil, !averageBlocked else { return }
         if let h = hit(p, radiusPx: radiusPx) { drag = .onPick(hit: h, start: p, snapshot: store.picks(currentKey!), moved: false) }
         else { drag = .onEmpty(start: p, shift: shift, moved: false) }
     }
@@ -188,7 +205,7 @@ final class PickController: ObservableObject {
 
     /// Right-click / ctrl-click: delete the pick under the cursor (or the whole selection if it is part of it).
     func rightClick(at p: CGPoint, radiusPx: Double) {
-        guard let k = currentKey, let h = hit(p, radiusPx: radiusPx) else { return }
+        guard let k = currentKey, !averageBlocked, let h = hit(p, radiusPx: radiusPx) else { return }
         let ids: Set<String> = selection.contains(h.id) ? selection : [h.id]
         store.remove(ids, from: k); selection.subtract(ids)
     }
@@ -199,7 +216,11 @@ final class PickController: ObservableObject {
     func applySweepText() {
         sweepError = nil
         var d: [Double] = [], b: [Double] = []
-        if sweepOn {
+        if !sweepOn {
+            // the workflow's size range: a ladder of sizes between the two ends, boxes following (or the one typed in)
+            let pp = store.project.params
+            d = pp.sweepDiametersNm; b = d.isEmpty ? [] : pp.sweepBoxesNm
+        } else {
             if let v = SweepSpec.parse(sweepDiameterText), !v.isEmpty { d = v } else { sweepError = "Diameters: type sizes in nm such as 12, 16, 20 or 10:30:5" }
             if sweepError == nil {
                 if let v = SweepSpec.parse(sweepBoxText) { b = v } else { sweepError = "Boxes: type sizes in nm, or leave blank" }
@@ -216,7 +237,7 @@ final class PickController: ObservableObject {
     /// Score map (cached while only extraction parameters change) -> candidates -> one undoable edit.
     /// `synchronous` is for tests; the app runs the numerics on a background queue.
     func runAutoPick(synchronous: Bool = false) {
-        guard let k = currentKey, !pixels.isEmpty, imageSize.width > 0 else { return }
+        guard let k = currentKey, !averageBlocked, !pixels.isEmpty, imageSize.width > 0 else { return }
         var params = autoParams
         params.diameterNm = store.project.params.diameterNm
         autoToken += 1
@@ -273,6 +294,7 @@ final class PickController: ObservableObject {
         let n = store.applyCandidates(k, cands, label: activeLabel, suppressPx: suppress, name: name, angpix: effectiveAngpix)
         lastAutoSerial[k] = store.topSerial(k)
         if let params { store.setAutoParams(k, params) }
+        if store.flow(k).auto != .done { store.setFlow(k, .auto, .done) }
         maxScore = max(10, ceil((cands.map { $0.score }.max() ?? 10)))
         autoMessage = "\(n) candidates" + (cands.count > n ? " (\(cands.count - n) suppressed near existing picks)" : "")
         if let ds = params?.sweepDiametersNm, !ds.isEmpty {

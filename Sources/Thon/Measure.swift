@@ -39,6 +39,9 @@ final class MeasureState: ObservableObject {
         didSet { if let k = currentKey { perImage[k] = lines } }
     }
     @Published var selected: UUID?
+    /// The quick measurement: ⌘-drag from any tool. Not stored, not selectable, and it leaves the tool you were on alone.
+    /// It stays on screen (so it can be read) until the next click, key press or image change.
+    @Published private(set) var quick: MeasureLine?
 
     private var perImage: [String: [MeasureLine]] = [:]
     private var currentKey: String?
@@ -50,8 +53,21 @@ final class MeasureState: ObservableObject {
         guard key != currentKey else { return }
         currentKey = key
         lines = key.flatMap { perImage[$0] } ?? []
-        selected = nil; drag = nil
+        selected = nil; drag = nil; quick = nil
     }
+
+    // MARK: quick measurement (⌘-drag)
+
+    func quickBegin(at p: CGPoint) { quick = MeasureLine(a: p, b: p) }
+    func quickDrag(to p: CGPoint, constrain: Bool) {
+        guard let q = quick else { return }
+        quick?.b = constrain ? Self.snapped(anchor: q.a, to: p) : p
+    }
+    /// A ⌘-click without a drag measures nothing: the line is dropped.
+    func quickEnd(minLengthPx: Double = 2) {
+        if let q = quick, q.lengthPx < minLengthPx { quick = nil }
+    }
+    func quickClear() { if quick != nil { quick = nil } }
 
     /// Endpoint within `radius` image px of `p`, nearest first.
     private func endpoint(near p: CGPoint, radius: Double) -> (UUID, Bool)? {
@@ -121,7 +137,7 @@ final class MeasureState: ObservableObject {
         guard let s = selected else { return }
         lines.removeAll { $0.id == s }; selected = nil
     }
-    func clear() { lines = []; selected = nil; drag = nil }
+    func clear() { lines = []; selected = nil; drag = nil; quick = nil }
 
     /// Delete / Escape while the tool is active. Returns true when the key was used.
     func handleKey(keyCode: UInt16) -> Bool {
@@ -134,6 +150,16 @@ final class MeasureState: ObservableObject {
     }
 }
 
+/// Keeps the picker and the ruler from fighting over the left mouse button: turning one on turns the other off. The crop
+/// editor is the exception. It stays on while the ruler is used (the ruler gets the mouse until it is turned off), so measuring
+/// in the middle of a section-by-section check does not end the check.
+enum ToolExclusion {
+    static func wire(picks: PickController, measure: MeasureState, into bag: inout Set<AnyCancellable>) {
+        picks.$enabled.sink { [weak picks, weak measure] on in if on, picks?.crops.active != true { measure?.enabled = false } }.store(in: &bag)
+        measure.$enabled.sink { [weak picks] on in if on, picks?.crops.active != true { picks?.enabled = false } }.store(in: &bag)
+    }
+}
+
 /// Draws the ruler lines over the micrograph. Hit testing is done by the Metal view; this layer is display only.
 struct MeasureOverlay: View {
     @ObservedObject var measure: MeasureState
@@ -143,15 +169,17 @@ struct MeasureOverlay: View {
 
     var body: some View {
         Canvas { ctx, size in
-            guard !measure.lines.isEmpty, vs.zoom > 0 else { return }
+            guard !measure.lines.isEmpty || measure.quick != nil, vs.zoom > 0 else { return }
             let bs = vs.backingScale == 0 ? 2 : vs.backingScale
             let g = ViewGeometry(zoom: vs.zoom, center: vs.center,
                                  viewPixels: CGSize(width: size.width * bs, height: size.height * bs), backingScale: bs)
             let ink = Color(red: 1.0, green: 0.84, blue: 0.2)
-            for l in measure.lines {
+            let all: [(MeasureLine, Bool)] = measure.lines.map { ($0, false) } + (measure.quick.map { [($0, true)] } ?? [])
+            for (l, isQuick) in all {
                 let a = g.toView(l.a), b = g.toView(l.b)
-                let sel = l.id == measure.selected
-                let col: Color = sel ? .white : ink
+                let sel = !isQuick && l.id == measure.selected
+                let col: Color = isQuick ? Color(red: 0.45, green: 0.9, blue: 1.0) : (sel ? .white : ink)
+                let dash: [CGFloat] = isQuick ? [6, 4] : []
                 var seg = Path(); seg.move(to: a); seg.addLine(to: b)
                 // end caps perpendicular to the line
                 let len = max(hypot(b.x - a.x, b.y - a.y), 0.001)
@@ -160,9 +188,9 @@ struct MeasureOverlay: View {
                 for p in [a, b] { caps.move(to: CGPoint(x: p.x - nx, y: p.y - ny)); caps.addLine(to: CGPoint(x: p.x + nx, y: p.y + ny)) }
                 ctx.stroke(seg, with: .color(.black.opacity(0.6)), lineWidth: 3.4)
                 ctx.stroke(caps, with: .color(.black.opacity(0.6)), lineWidth: 3.4)
-                ctx.stroke(seg, with: .color(col), lineWidth: sel ? 1.8 : 1.3)
+                ctx.stroke(seg, with: .color(col), style: StrokeStyle(lineWidth: sel ? 1.8 : 1.3, dash: dash))
                 ctx.stroke(caps, with: .color(col), lineWidth: sel ? 1.8 : 1.3)
-                if sel || measure.enabled {
+                if sel || measure.enabled || isQuick {
                     for p in [a, b] {
                         let r = CGRect(x: p.x - 3.5, y: p.y - 3.5, width: 7, height: 7)
                         ctx.fill(Path(ellipseIn: r), with: .color(col)); ctx.stroke(Path(ellipseIn: r), with: .color(.black), lineWidth: 1)
@@ -192,6 +220,7 @@ struct MeasureMenuItems: View {
         Toggle("Measure Tool (M)", isOn: $measure.enabled).keyboardShortcut("m", modifiers: [.command, .option])
         Button("Delete Selected Measurement") { measure.deleteSelected() }.disabled(measure.selected == nil)
         Button("Clear All Measurements on This Image") { measure.clear() }.disabled(measure.lines.isEmpty)
+        Text("Quick measurement: hold ⌘ and drag, in any tool")
     }
 }
 
@@ -201,6 +230,6 @@ struct MeasureToggle: View {
     var body: some View {
         Toggle(isOn: $measure.enabled) { Label("Measure", systemImage: "ruler") }
             .toggleStyle(.button)
-            .help("Measure tool (M): drag to measure, Shift snaps to 45°, Option-drag pans, Delete removes the selected line")
+            .help("Measure tool (M): drag to measure, Shift snaps to 45°, Option-drag pans, Delete removes the selected line. For a one-off measurement that leaves your tool alone, hold ⌘ and drag.")
     }
 }

@@ -115,9 +115,9 @@ final class AppModel: ObservableObject {
     /// -1 = the average of all frames of a stack (the default); 0... = that frame, picked on its own.
     @Published var frame = -1
     var pendingFrame: Int?
-    /// Stacks the user has unpacked into frames / explicitly kept averaged in this run. A stack that already has picks on its
-    /// frames opens unpacked, so those picks are never hidden.
-    var unpackedFiles = Set<URL>(), forcedAverage = Set<URL>()
+    /// Whether a stack is unpacked into frames is saved in the project file (`MicRecord.unpacked`). An unpacked stack never
+    /// shows its average and cannot be picked on as a whole; a stack with picks on its frames from before counts as unpacked.
+    func isUnpacked(_ url: URL) -> Bool { depth(of: url) > 1 && picks.store.isUnpacked(base: picks.store.key(for: url)) }
     struct StackHint: Equatable { let url: URL; let depth: Int }
     /// Offered when a SerialEM stack opens as its average: unpack it to pick each frame separately.
     @Published var stackHint: StackHint?
@@ -169,9 +169,8 @@ final class AppModel: ObservableObject {
         picks.engineSettings.$enabled.sink { [weak self] on in
             if !on, let p = self?.picks, p.engine != .builtin { p.engine = .builtin; p.autoLive = false; p.autoMessage = nil }
         }.store(in: &picksBag)
-        // The picker and the ruler both own the left mouse button, so only one can be active.
-        picks.$enabled.sink { [weak self] on in if on { self?.measure.enabled = false } }.store(in: &picksBag)
-        measure.$enabled.sink { [weak self] on in if on { self?.picks.enabled = false } }.store(in: &picksBag)
+        // The picker and the ruler both own the left mouse button, so only one can be active (the crop editor stays on, see ToolExclusion).
+        ToolExclusion.wire(picks: picks, measure: measure, into: &picksBag)
     }
     var renderer: MicrographRenderer?
 
@@ -206,12 +205,15 @@ final class AppModel: ObservableObject {
         let z = min(max(Double(min(view.viewPixels.width, view.viewPixels.height)) / (5 * box), 0.05), 32)
         let focus = CGPoint(x: x + 0.5, y: y + 0.5)
         guard let target = items.first(where: { picks.store.key(for: $0.url) == key })?.url else { loadError = "Micrograph \(key) is not in the open folder / project."; return }
-        if let f = onFrame { unpackedFiles.insert(target); forcedAverage.remove(target); expandedStacks.insert(target); pendingFrame = f }
-        else { unpackedFiles.remove(target); forcedAverage.insert(target) }               // a pick on the whole file shows on the average
+        // a pick on a frame unpacks the stack; a pick on the whole file of an unpacked stack has no average to show, so frame 1 opens
+        let tkey = picks.store.key(for: target)
+        if onFrame != nil { picks.store.setUnpacked(tkey, true); expandedStacks.insert(target) }
+        let wantFrame: Int? = onFrame ?? (picks.store.isUnpacked(base: tkey) ? 0 : nil)
+        if let f = wantFrame { pendingFrame = f }
         if target == selection {
             view.center = focus; view.zoom = z
-            if let f = onFrame, f != frame { frame = f; pendingFrame = nil; loadSelection() }
-            else if onFrame == nil, frame >= 0 { frame = -1; loadSelection() }
+            if let f = wantFrame, f != frame { frame = f; pendingFrame = nil; loadSelection() }
+            else if wantFrame == nil, frame >= 0 { frame = -1; loadSelection() }
         } else { view.pendingFocus = (focus, z); selection = target }
     }
 
@@ -473,19 +475,45 @@ final class AppModel: ObservableObject {
     }
 
     var selectedIndex: Int? { items.firstIndex { $0.url == selection } }
+    /// Next / previous: in an unpacked stack the next frame of the same file, and after the last frame the next file (its first
+    /// frame when it is unpacked too). Going back from the first frame lands on the last frame of the previous unpacked file.
     func step(_ d: Int) {
+        if stepsWithinStack(d), let u = selection { select(.frame(u, frame + d)); return }
         let list = visibleItems(items)
         guard let i = list.firstIndex(where: { $0.url == selection }) ?? (tagFilter == nil ? nil : (d > 0 ? -1 : list.count)) else { return }
         let j = min(max(i + d, 0), list.count - 1)
-        if list.indices.contains(j) { selection = list[j].url }
+        guard list.indices.contains(j) else { return }
+        let target = list[j].url
+        if j != i, d < 0, isUnpacked(target) { pendingFrame = depth(of: target) - 1 }      // arriving from after it: start at its last frame
+        selection = target
     }
+    /// True when stepping by `d` stays inside the open unpacked stack (another frame of it).
+    func stepsWithinStack(_ d: Int) -> Bool {
+        guard let u = selection, frame >= 0, isUnpacked(u) else { return false }
+        return (0..<depth(of: u)).contains(frame + d)
+    }
+    /// Whether Next / Previous would go anywhere: another frame of an unpacked stack, or another micrograph.
+    func canStep(_ d: Int) -> Bool {
+        if stepsWithinStack(d) { return true }
+        let list = visibleItems(items)
+        guard let i = list.firstIndex(where: { $0.url == selection }) else { return false }
+        return list.indices.contains(i + d)
+    }
+    /// "3 / 40", plus "· frame 5/12" while an unpacked stack is open.
+    var positionTitle: String {
+        guard let i = selectedIndex else { return "–" }
+        var t = "\(i + 1) / \(items.count)"
+        if let u = selection, frame >= 0, isUnpacked(u) { t += " · frame \(frame + 1)/\(depth(of: u))" }
+        return t
+    }
+    /// What the Next button of the check should say: the next frame inside an unpacked stack, else the next micrograph.
+    var nextTitle: String { stepsWithinStack(1) ? "Next frame" : "Next micrograph" }
 
     // MARK: loading
 
     func loadSelection() {
         guard let url = selection else { return }
-        if frame < 0, !forcedAverage.contains(url),
-           unpackedFiles.contains(url) || picks.store.hasFramePicks(base: picks.store.key(for: url)) { frame = 0 }
+        if frame < 0, picks.store.isUnpacked(base: picks.store.key(for: url)) { frame = 0 }      // the average of an unpacked stack is never shown
         loadToken += 1
         let token = loadToken, fr = frame
         isLoading = true; loadError = nil
@@ -545,10 +573,10 @@ final class AppModel: ObservableObject {
         switch id {
         case nil: selection = nil
         case .file(let u)?:
-            unpackedFiles.remove(u); forcedAverage.insert(u)
+            if isUnpacked(u) { select(.frame(u, 0)); return }                  // no average to open: start at the first frame
             if u == selection { if frame >= 0 { frame = -1; loadSelection() } } else { selection = u }
         case .frame(let u, let n)?:
-            unpackedFiles.insert(u); forcedAverage.remove(u); expandedStacks.insert(u)
+            picks.store.setUnpacked(picks.store.key(for: u), true); expandedStacks.insert(u)
             if u == selection { if frame != n { frame = n; loadSelection() } } else { pendingFrame = n; selection = u }
         }
     }
@@ -561,7 +589,7 @@ final class AppModel: ObservableObject {
         guard n > 1 else { return [] }
         let base = picks.store.key(for: url)
         if let tagged { return (0..<n).filter { tagged.contains(FrameKey.make(base, frame: $0)) } }
-        return expandedStacks.contains(url) ? Array(0..<n) : []
+        return expandedStacks.contains(url) || isUnpacked(url) ? Array(0..<n) : []
     }
 
     /// Files the sidebar lists under the tag filter (all of them without one).
@@ -579,8 +607,8 @@ final class AppModel: ObservableObject {
     func setUnpacked(_ on: Bool) {
         guard let url = selection else { return }
         stackHint = nil
-        if on { unpackedFiles.insert(url); forcedAverage.remove(url); expandedStacks.insert(url); frame = 0 }
-        else { unpackedFiles.remove(url); forcedAverage.insert(url); frame = -1 }
+        picks.store.setUnpacked(picks.store.key(for: url), on)          // saved in the project file
+        if on { expandedStacks.insert(url); frame = 0 } else { frame = -1 }
         loadSelection()
     }
 
@@ -661,6 +689,9 @@ final class AppModel: ObservableObject {
     }
 
     func handleKey(_ e: NSEvent) -> Bool {
+        measure.quickClear()
+        // while the ruler is on it gets Delete and Esc first, also inside the crop editor (so Esc ends the ruler, not the check)
+        if measure.enabled, !e.modifierFlags.contains(.command), measure.handleKey(keyCode: e.keyCode) { return true }
         if picks.crops.active, handleCropKey(e) { return true }
         switch e.keyCode {
         case 123, 126: step(-1); return true
@@ -669,7 +700,6 @@ final class AppModel: ObservableObject {
         }
         let chars = e.charactersIgnoringModifiers ?? ""
         let mods = e.modifierFlags
-        if !mods.contains(.command), measure.handleKey(keyCode: e.keyCode) { return true }
         if !picks.crops.active, picks.handleKey(chars: chars, keyCode: e.keyCode, shift: mods.contains(.shift), command: mods.contains(.command)) { return true }
         switch chars.lowercased() {
         case "m": measure.enabled.toggle(); return true

@@ -439,6 +439,10 @@ final class PickStore: ObservableObject {
         Set(project.mics.filter { $0.value.tags?.contains(tag.rawValue) == true }.map { $0.key })
     }
     private func pruneEmpty(_ key: String) { if project.mics[key] == MicRecord() { project.mics[key] = nil } }
+    /// Edits one micrograph's record outside the pick history, drops the record when it ends up empty, and saves.
+    func mutateMic(_ key: String, _ f: (inout MicRecord) -> Void) {
+        mutateRecord(key, f); pruneEmpty(key); touch(key, structural: false)
+    }
 
     func setSwipe(_ key: String, _ log: SwipeLog?) { mutateRecord(key) { $0.swipe = log }; touch(key, structural: false) }
     func setAutoParams(_ key: String, _ a: AutoParams?) { mutateRecord(key) { $0.auto = a }; touch(key, structural: false) }
@@ -523,10 +527,10 @@ final class PickStore: ObservableObject {
         if let i = micInfo[key] { r.width = i.0; r.height = i.1; r.angpix = i.2 }
         project.mics[key] = r
     }
-    private func mutateRecord(_ key: String, _ f: (inout MicRecord) -> Void) {
+    fileprivate func mutateRecord(_ key: String, _ f: (inout MicRecord) -> Void) {
         var r = project.mics[key] ?? MicRecord(); f(&r); project.mics[key] = r
     }
-    private func touch(_ key: String?, structural: Bool = true) {
+    fileprivate func touch(_ key: String?, structural: Bool = true) {
         if let key, structural { micRev[key, default: 0] += 1 }
         revision += 1; dirty = true
         scheduleSave()

@@ -7,18 +7,36 @@ struct PicksTab: View {
     @ObservedObject var units = UnitSettings.shared
     @ObservedObject var engines = EngineSettings.shared
 
-    private var key: String? { pc.currentKey }
+    var key: String? { pc.currentKey }
+    @State private var pendingDelete: PendingDelete?
+
+    /// A deletion that asks first: it cannot be undone completely (other micrographs, done sections).
+    enum PendingDelete: Identifiable {
+        case micrograph(count: Int)
+        case labelEverywhere(id: String, name: String, count: Int)
+        var id: String { switch self { case .micrograph: return "micrograph"; case .labelEverywhere(let id, _, _): return "label:" + id } }
+        var title: String {
+            switch self {
+            case .micrograph(let n): return "Delete all \(n) picks and candidates on this micrograph?"
+            case .labelEverywhere(_, let name, let n): return "Delete all \(n) \(name) picks on every micrograph?"
+            }
+        }
+        var detail: String {
+            switch self {
+            case .micrograph: return "Done sections and the step marks of this micrograph are cleared too. ⌘Z brings the picks back, not the done sections."
+            case .labelEverywhere: return "⌘Z undoes it one micrograph at a time, on the open micrograph only."
+            }
+        }
+    }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
-                if pc.crops.active { CropPanel(model: model, pc: pc, cs: pc.crops, store: store) }
-                modeCard
-                findCard
-                reviewCard
+                workflowCard
                 labelsCard
-                LoupeCard(model: model, pc: pc, cursor: model.cursor)
                 micrographCard
+                displayCard
+                LoupeCard(model: model, pc: pc, cursor: model.cursor)
                 classesCard
                 ioCard
                 projectCard
@@ -26,18 +44,22 @@ struct PicksTab: View {
             }.padding(10)
         }
         .sheet(isPresented: $pc.showLabelEditor) { LabelEditor(pc: pc) }
+        .confirmationDialog(pendingDelete?.title ?? "", isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }), titleVisibility: .visible, presenting: pendingDelete) { d in
+            Button("Delete", role: .destructive) {
+                switch d {
+                case .micrograph: pc.deleteAllPicks()
+                case .labelEverywhere(let id, _, _): pc.deleteAll(label: id, everywhere: true)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { d in Text(d.detail) }
     }
 
     // MARK: cards
 
-    private var modeCard: some View {
-        Card(title: "Picker") {
-            HStack {
-                Toggle("Pick mode (P)", isOn: $pc.enabled)
-                Spacer()
-                Button { model.toggleCrops() } label: { Label(pc.crops.active ? "Leave crop editor" : "Crop editor", systemImage: "viewfinder.circle") }.controlSize(.small)
-                    .help("Go through the micrograph one section at a time (⌥⌘T)")
-            }
+    /// Overlays and undo, always at hand whatever step is open.
+    private var displayCard: some View {
+        CollapsibleCard(title: "Display and undo", id: "display", defaultOpen: true) {
             HStack {
                 Toggle("Markers (V)", isOn: $pc.showMarkers)
                 Toggle("Boxes (B)", isOn: $pc.showBoxes)
@@ -50,109 +72,10 @@ struct PicksTab: View {
                 Spacer()
                 if let k = key, let n = store.undoName(k) { Text(n).font(.caption).foregroundStyle(.secondary) }
             }
-        }
-    }
-
-    /// Everything that decides which particles are found, in the order it is used: size, method, run.
-    private var findCard: some View {
-        Card(title: "Find particles") {
-            let params = store.project.params
-            let diam = Binding(get: { store.project.params.diameterNm }, set: { v in var p = store.project.params; p.diameterNm = v; store.setParams(p) })
-            let box = Binding(get: { store.project.params.boxNm }, set: { v in var p = store.project.params; p.boxNm = v; store.setParams(p) })
-            let ap = $pc.autoParams
-            lengthSlider("Particle diameter", diam, 3...80, nmFormat: "%.1f")
-            lengthSlider("Extraction box", box, 5...150, nmFormat: "%.1f")
-            let pa = pc.effectiveAngpix
-            Text(String(format: "= %.0f px marker, %.0f px box at %.4g Å/px", params.diameterNm * 10 / pa, params.boxNm * 10 / pa, pa)
-                 + (pc.pixelSizeA == nil ? " (uncalibrated: 1 Å/px assumed)" : ""))
-                .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("Resize all to default") { if let k = key { store.setDiameter(nil, nm: nil, in: k) } }.controlSize(.small)
                 Spacer()
                 Text(", / . : resize selection (or default)").font(.caption2).foregroundStyle(.secondary)
-            }
-            Divider()
-            // Topaz and CryoSegNet are offered only when switched on in Preferences (⌘,)
-            let engine = pc.effectiveEngine
-            if engines.enabled {
-                Picker("Engine", selection: $pc.engine) { ForEach(PickEngine.allCases) { Text($0.rawValue).tag($0) } }
-                    .pickerStyle(.segmented).labelsHidden()
-                    .onChange(of: pc.engine) { _, _ in pc.autoLive = false; pc.autoMessage = nil }
-            }
-            if engine == .builtin {
-                Picker("Method", selection: ap.method) { ForEach(PickMethod.allCases) { Text($0.rawValue).tag($0) } }
-                    .pickerStyle(.segmented).labelsHidden()
-            }
-            Toggle("Particles are brighter than background", isOn: ap.bright)
-            if engine == .builtin { slider("Score threshold (robust z)", ap.zThreshold, 2...12, "%.1f") }
-            else { EngineSetupView(engine: engine) }
-            HStack {
-                Button { pc.runFind() } label: { Label(pc.autoBusy ? "Working…" : "Find particles", systemImage: "sparkles") }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(pc.autoBusy || key == nil)
-                if engine == .builtin {
-                    Toggle("Live", isOn: $pc.autoLive).toggleStyle(.checkbox).help("Re-run automatically when a setting changes")
-                }
-                if pc.autoBusy { ProgressView().controlSize(.small) }
-            }
-            if let m = pc.autoMessage { Text(m).font(.caption).foregroundStyle(.secondary) }
-            if engine == .builtin { DisclosureGroup("Try a range of sizes") {
-                VStack(alignment: .leading, spacing: 6) {
-                    Toggle("Sweep diameters and boxes", isOn: $pc.sweepOn).onChange(of: pc.sweepOn) { _, _ in pc.applySweepText() }
-                    TextField("Diameters (nm): 12, 16, 20  or  10:30:5", text: $pc.sweepDiameterText)
-                        .textFieldStyle(.roundedBorder).disabled(!pc.sweepOn).onSubmit { pc.applySweepText() }
-                    TextField("Boxes (nm): blank = follow diameter", text: $pc.sweepBoxText)
-                        .textFieldStyle(.roundedBorder).disabled(!pc.sweepOn).onSubmit { pc.applySweepText() }
-                    if let e = pc.sweepError { Text(e).font(.caption).foregroundStyle(.red) }
-                    Text("Each size is searched in turn; where sizes overlap the best score wins. Every candidate keeps its own diameter and box (shown, cropped and exported at that size). Blank boxes keep the project's box : diameter ratio; one box applies to all; or give one per diameter. The Particle diameter above is not used while this is on. Press Return or Find particles to apply.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }.padding(.top, 4)
-            } }
-            if engine == .builtin { DisclosureGroup("More settings") {
-                VStack(alignment: .leading, spacing: 6) {
-                    slider("Min separation × diameter", Binding(get: { pc.autoParams.minSepNm == 0 ? 0.9 : pc.autoParams.minSepNm / max(store.project.params.diameterNm, 1) },
-                                                                set: { pc.autoParams.minSepNm = $0 * store.project.params.diameterNm }), 0.3...2, "%.2f")
-                    lengthSlider("Flatten background σ", ap.flattenNm, 0...400, nmFormat: "%.0f", note: ", 0 = off")
-                    lengthSlider("Smoothing σ", ap.smoothNm, 0...20, nmFormat: "%.1f", note: ", 0 = auto")
-                    HStack {
-                        Text("Max picks").font(.callout)
-                        Stepper(value: ap.maxPicks, in: 10...5000, step: 50) { Text("\(pc.autoParams.maxPicks)").monospacedDigit() }
-                    }
-                }.padding(.top, 4)
-            } }
-            DisclosureGroup("External picker command") {
-                VStack(alignment: .leading, spacing: 6) {
-                    TextField("script.py {mic} {angpix}", text: $pc.externalCommand).textFieldStyle(.roundedBorder)
-                    Text("Must print JSON: [{\"x\":..,\"y\":..,\"score\":..}] (pixel coordinates, origin top-left). Results appear as candidates.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                    Button("Run command") { pc.runExternalPicker() }.disabled(pc.autoBusy || pc.externalCommand.isEmpty).controlSize(.small)
-                }.padding(.top, 4)
-            }
-        }
-    }
-
-    /// What to do with the candidates once they are on the micrograph.
-    private var reviewCard: some View {
-        Card(title: "Review candidates") {
-            let cands = key.map { store.candidates($0) } ?? []
-            if cands.isEmpty {
-                Text("No candidates on this micrograph yet. Press Find particles above.").font(.caption).foregroundStyle(.secondary)
-            } else {
-                let shown = cands.filter { ($0.score ?? .infinity) >= pc.scoreCutoff }.count
-                slider("Show candidates with score ≥", Binding(get: { Double(pc.scoreCutoff) }, set: { pc.scoreCutoff = Float($0) }), 0...Double(pc.maxScore), "%.1f")
-                Text("\(shown) of \(cands.count) candidates shown").font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button("Accept all shown (A)") { pc.acceptAllCandidates() }.buttonStyle(.borderedProminent)
-                    Button("Dismiss hidden") { pc.dismissBelowCutoff() }
-                }.controlSize(.small)
-                Toggle("Show scores", isOn: $pc.showScores)
-                DisclosureGroup("Clean up") {
-                    HStack {
-                        Button("Remove overlaps") { pc.removeOverlapping() }
-                        Button("Remove edge picks") { pc.removeEdgePicks() }
-                        Button("Clear candidates") { pc.dismissAllCandidates() }
-                    }.controlSize(.small).padding(.top, 4)
-                }
             }
         }
     }
@@ -177,6 +100,14 @@ struct PicksTab: View {
                         pc.pruneSelection()
                     } label: { Image(systemName: pc.hiddenLabels.contains(l.id) ? "eye.slash" : "eye") }
                         .buttonStyle(.borderless)
+                    let here = counts[l.id, default: 0], all = totals[l.id, default: 0]
+                    Menu {
+                        Button("Delete all \(l.name) on this micrograph (\(here))", role: .destructive) { pc.deleteAll(label: l.id, everywhere: false) }.disabled(here == 0)
+                        Button("Delete all \(l.name) on every micrograph (\(all))…", role: .destructive) { pendingDelete = .labelEverywhere(id: l.id, name: l.name, count: all) }.disabled(all == 0)
+                    } label: { Image(systemName: "trash") }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                        .help("Delete all \(l.name) picks")
+                        .disabled(all == 0)
                 }
                 .padding(.horizontal, 6).padding(.vertical, 3)
                 .background(active ? Color.accentColor.opacity(0.28) : Color.clear, in: RoundedRectangle(cornerRadius: 5))
@@ -213,7 +144,13 @@ struct PicksTab: View {
                 let done = Binding(get: { store.record(k).done }, set: { store.setDone(k, $0) })
                 let note = Binding(get: { store.record(k).note }, set: { store.setNote(k, $0) })
                 let c = store.accepted(k).count, cand = store.candidates(k).count
-                Text("\(c) picks" + (cand > 0 ? " · \(cand) candidates" : "")).font(.callout)
+                HStack {
+                    Text("\(c) picks" + (cand > 0 ? " · \(cand) candidates" : "")).font(.callout)
+                    Spacer()
+                    Button(role: .destructive) { pendingDelete = .micrograph(count: c + cand) } label: { Label("Delete all picks", systemImage: "trash") }
+                        .controlSize(.small).disabled(c + cand == 0).help("Remove every pick and candidate on this micrograph")
+                }
+                if let m = pc.editMessage { Text(m).font(.caption).foregroundStyle(.secondary) }
                 Toggle("Done", isOn: done)
                 TextField("Note", text: note, axis: .vertical).textFieldStyle(.roundedBorder).lineLimit(1...3)
             } else { Text("No micrograph").foregroundStyle(.secondary) }
@@ -262,27 +199,15 @@ struct PicksTab: View {
         }
     }
 
+    /// Importing picks (exporting is the last step of the workflow).
     private var ioCard: some View {
-        CollapsibleCard(title: "Import / export", id: "io", defaultOpen: true) {
-            ForEach(ExportFormat.allCases) { f in
-                Toggle(f.rawValue, isOn: Binding(get: { pc.exportFormats.contains(f) },
-                                                 set: { if $0 { pc.exportFormats.insert(f) } else { pc.exportFormats.remove(f) } }))
-            }
-            if store.project.isSessionProject {
-                Picker("Sessions", selection: $pc.exportSessionID) {
-                    Text("All sessions (one dataset folder each)").tag(String?.none)
-                    ForEach(store.project.sessions) { Text($0.name).tag(Optional($0.id)) }
-                }.controlSize(.small)
-            }
-            Toggle("Only micrographs marked Done", isOn: $pc.exportOnlyDone)
-            if store.project.params.maybeFlag { Toggle("Leave out picks flagged maybe", isOn: $pc.exportExcludeMaybe) }
+        CollapsibleCard(title: "Import picks", id: "io") {
             HStack {
-                Button("Export…") { PickPanels.chooseExport(model: model) }
                 Button("Import…") { PickPanels.chooseImport(model: model, asCandidates: false) }
                 Button("Import as candidates…") { PickPanels.chooseImport(model: model, asCandidates: true) }
             }.controlSize(.small)
             if let m = pc.ioMessage { Text(m).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-            Text("Export layout = the web picker's picks_export/: <dataset>/<label>/<micrograph>.star, coords_list_<label>.star, all_picks.csv. Only accepted picks of exported labels are written." + (store.project.isSessionProject ? " In a .thon project <dataset> is the session name." : ""))
+            Text("Reads the files an export wrote (.star, all_picks.csv) or a labels file. Exporting is the last step of the workflow above.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
     }
@@ -308,7 +233,7 @@ struct PicksTab: View {
     }
 
     /// Slider for a length stored in nm, shown and dragged in the display unit (nm or Å).
-    private func lengthSlider(_ title: String, _ nm: Binding<Double>, _ rangeNm: ClosedRange<Double>,
+    func lengthSlider(_ title: String, _ nm: Binding<Double>, _ rangeNm: ClosedRange<Double>,
                               nmFormat: String, note: String = "") -> some View {
         let a = units.angstroms
         let shown = Binding(get: { LengthUnits.fromNm(nm.wrappedValue, angstroms: a) },
@@ -317,7 +242,7 @@ struct PicksTab: View {
         return slider("\(title) (\(LengthUnits.name(a))\(note))", shown, range, a ? "%.0f" : nmFormat)
     }
 
-    private func slider(_ title: String, _ v: Binding<Double>, _ r: ClosedRange<Double>, _ f: String) -> some View {
+    func slider(_ title: String, _ v: Binding<Double>, _ r: ClosedRange<Double>, _ f: String) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack { Text(title).font(.callout); Spacer(); Text(String(format: f, v.wrappedValue)).font(.system(.callout, design: .monospaced)).foregroundStyle(.secondary) }
             Slider(value: v, in: r)
