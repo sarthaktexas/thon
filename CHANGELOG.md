@@ -1,7 +1,8 @@
 # Changelog
 
-## Hold Space to hide overlays
-* **Hold Space over the image** to hide everything drawn on it (picks and their boxes, rulers, header, scale bar, readout) and see the bare micrograph; release to bring it all back. While Space is held, clicks only pan, so nothing invisible is picked or measured. It also releases if the window loses focus. Space is not a label hotkey, so it cannot clash with a label scheme (`OverlayPeek` in `OverlayPeek.swift`). Not seen on screen: compile and `--picktest` only.
+## Hold a key to hide overlays; zoom out further in the crop editor
+* **Hold ` (backtick) to hide the overlays** in the main viewer and in the crop editor; release to bring them back. The main viewer also accepts **Space** (in the crop editor Space still steps to the next type). In the viewer it hides picks and boxes, rulers, the header, scale bar and readout; in the crop editor it hides the circles, their labels and the badge. While the key is held, clicks do not add, move or remove anything (the viewer only pans). It also lets go when the window loses focus. `[`, `]` and ` are now reserved label hotkeys (`LabelScheme.reservedKeys`). `OverlayPeek` in `OverlayPeek.swift`. Not seen on screen.
+* **Crop editor zoom out is now a stepper: normal, ×2, ×4, ×8, ×16** (was a ×2 checkbox). Keys: `]` zooms out, `[` zooms in. Past ×2 it stops once the window would be wider than the micrograph's longer side, because the crop is read (and denoised) at the window's full size. Like the old checkbox it resets to normal on the next crop. `CropSession.zoomLevel`, `maxZoomLevel`; `zoomOut` still works as an on/off view of level 1.
 
 ## Fewer files in the project folder
 * **Backups are hidden**: `.<name>_backups/` for `.thon` projects, `.backups/` for folder projects (Finder: ⇧⌘. shows them). Backups from older versions are moved there on the next backup (only files with the project's own prefix; the old folder is removed once empty).

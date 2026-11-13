@@ -120,7 +120,7 @@ final class InteractiveMTKView: MTKView {
         if onKey?(event) != true { super.keyDown(with: event) }
     }
     override func keyUp(with event: NSEvent) {
-        if event.keyCode == OverlayPeek.keyCode { setPeeking(false) } else { super.keyUp(with: event) }
+        if OverlayPeek.isPeekKeyCode(event.keyCode) { setPeeking(false) } else { super.keyUp(with: event) }
     }
 
     private func setPeeking(_ on: Bool) {

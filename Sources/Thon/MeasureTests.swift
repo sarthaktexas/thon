@@ -66,5 +66,6 @@ func testMeasureAndUnits(_ t: inout TestRun) {
 
     // hold-Space peek key
     t.check(OverlayPeek.isPeekKey(keyCode: 49, modifiers: []) && OverlayPeek.isPeekKey(keyCode: 49, modifiers: [.shift]), "Space (with or without Shift) is the peek key")
+    t.check(OverlayPeek.isPeekKey(keyCode: 50, modifiers: []) && OverlayPeek.isCropPeekCharacter("`") && !OverlayPeek.isCropPeekCharacter(" "), "backtick peeks everywhere; Space only in the main viewer")
     t.check(!OverlayPeek.isPeekKey(keyCode: 49, modifiers: [.command]) && !OverlayPeek.isPeekKey(keyCode: 49, modifiers: [.option]) && !OverlayPeek.isPeekKey(keyCode: 0, modifiers: []), "other keys and Command/Option+Space are not")
 }

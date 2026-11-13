@@ -100,6 +100,11 @@ func testCrops(_ t: inout TestRun) {
     cs.zoomOut = true
     t.check(cs.items.contains { $0.id == "far" } && cs.windowPx == 2 * cs.sidePx, "zoom out ×2 adds the circles of the wider window")
     cs.zoomOut = false
+    t.check(cs.zoomLevel == 0 && cs.windowPx == cs.sidePx, "zoom out off returns to the normal window")
+    cs.zoomLevel = 99
+    t.check(cs.zoomLevel == cs.maxZoomLevel && cs.maxZoomLevel >= 1 && cs.windowPx == cs.sidePx * Double(1 << cs.maxZoomLevel), "zoom out is capped at the largest level", "\(cs.zoomLevel)")
+    cs.zoomLevel = -3
+    t.check(cs.zoomLevel == 0, "zoom out cannot go below normal")
 
     // --- reject is not a type; deleting is the only way to reject
     t.section("crop editor: no reject type")

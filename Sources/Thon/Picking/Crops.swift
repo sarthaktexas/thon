@@ -45,7 +45,20 @@ final class CropSession: ObservableObject {
     @Published var sizeTyping = UserDefaults.standard.bool(forKey: "crop.sizeTyping") { didSet { UserDefaults.standard.set(sizeTyping, forKey: "crop.sizeTyping") } }
     @Published private(set) var sizeTyper: SizeTyper?
     @Published var penNm: Double = 0                         // size of the next circle you add (0 until the project default is read)
-    @Published var zoomOut = false { didSet { if zoomOut != oldValue { revision += 1; addPicksOfWindow() } } }
+    /// Zoom-out level: the window is `sidePx × 2^zoomLevel` wide (0 = normal, 1 = ×2, 2 = ×4, …), up to `maxZoomLevel`.
+    @Published var zoomLevel = 0 {
+        didSet {
+            guard zoomLevel != oldValue else { return }
+            let c = min(max(zoomLevel, 0), maxZoomLevel)
+            if c != zoomLevel { zoomLevel = c }
+            if zoomLevel != oldValue { revision += 1; addPicksOfWindow() }
+        }
+    }
+    /// On / off view of the first zoom-out level (×2).
+    var zoomOut: Bool {
+        get { zoomLevel > 0 }
+        set { zoomLevel = newValue ? max(zoomLevel, 1) : 0 }
+    }
     @Published var sideDiameters = 5.0 { didSet { if sideDiameters != oldValue { sideDiameters = min(max(sideDiameters, 2), 12); if sideDiameters != oldValue { rebuild() } } } }
     @Published var includeEmpty = false { didSet { if includeEmpty != oldValue { rebuild() } } }
     @Published var order = Order.uncertain { didSet { if order != oldValue { reorder() } } }
@@ -76,7 +89,16 @@ final class CropSession: ObservableObject {
         let cap = max(1, min(pc.imageSize.width, pc.imageSize.height))
         return min(max(64, sideDiameters * defaultDiameterPx), cap)
     }
-    var windowPx: Double { sidePx * (zoomOut ? 2 : 1) }
+    var windowPx: Double { sidePx * Double(1 << zoomLevel) }
+    /// Highest zoom-out level (×2, ×4, ×8, ×16). Past ×2 it stops once the window would be wider than the micrograph's
+    /// longer side, since the plate is read and denoised at the window's full size.
+    var maxZoomLevel: Int {
+        let big = Double(max(pc.imageSize.width, pc.imageSize.height))
+        var level = 1
+        while level < 4, sidePx * Double(1 << (level + 1)) <= big { level += 1 }
+        return level
+    }
+    var zoomLabel: String { zoomLevel == 0 ? "normal" : "×\(1 << zoomLevel)" }
     var current: Tile? { queue.first }
     var done: Bool { queue.isEmpty }
     var remaining: Int { queue.count }

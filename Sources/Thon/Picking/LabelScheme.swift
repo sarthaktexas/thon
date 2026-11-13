@@ -69,8 +69,8 @@ struct LabelScheme: Codable, Equatable {
         return candidates.first { label($0) != nil }
     }
 
-    /// Keys the viewer itself uses while picking.
-    static let reservedKeys: Set<String> = ["a", "b", "f", "g", "i", "p", "s", "v", ",", ".", "=", "+", "-", "?", "/"]
+    /// Keys the viewer itself uses while picking (`[` `]` zoom the crop editor, ` hides overlays).
+    static let reservedKeys: Set<String> = ["a", "b", "f", "g", "i", "p", "s", "v", ",", ".", "=", "+", "-", "?", "/", "[", "]", "`"]
 
     func label(_ id: String) -> PickLabel? { labels.first { $0.id == id } }
     func label(forKey k: String) -> PickLabel? { labels.first { $0.key.lowercased() == k.lowercased() } }

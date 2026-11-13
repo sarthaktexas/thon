@@ -41,6 +41,7 @@ struct CropView: View {
     /// Edge of the square canvas; follows the space the sheet gives it (see `body`).
     @State private var side: CGFloat = 600
     @State private var showHelp = false
+    @State private var peeking = false          // backtick held: circles and labels are hidden
     @State private var showMoreDisplay = false
     @State private var showOrdering = false
     private let sidebarW: CGFloat = 280
@@ -66,7 +67,10 @@ struct CropView: View {
         .padding(16)
         .frame(minWidth: 900, idealWidth: 1040, minHeight: 660, idealHeight: 780)
         .focusable().focused($focused).focusEffectDisabled()
-        .onKeyPress(phases: .down) { handle($0) }
+        .onKeyPress(phases: [.down, .repeat, .up]) { handle($0) }
+        .onChange(of: focused) { _, f in if !f { peeking = false } }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in peeking = false }
+        .onDisappear { peeking = false }
         .onAppear { focused = true; cs.rebuild() }
         .onChange(of: pc.currentKey) { _, _ in cs.rebuild() }
         .onChange(of: pc.autoBusy) { _, busy in if !busy { cs.rebuild() } }
@@ -97,6 +101,7 @@ struct CropView: View {
                 Text("Pinch, ↑ ↓ or the size slider to resize it.")
                 Text("Double-click a circle (or Delete) to remove it. Removing a circle the picker found teaches it that it was wrong; removing one you added just takes it away.")
                 Text("Right-click a circle to change its type (or press its type's number key; Space steps to the next type).")
+                Text("Hold ` (backtick) to hide the circles and see the bare crop. ] zooms out (×2, ×4, ×8, ×16), [ zooms in.")
                 Text("A circle is drawn in the colour of its type; dashed = a suggestion nobody has touched.")
                 Text("Return confirms the crop and goes on; Z undoes.")
                 Text("Circles you leave alone count as confirmed.")
@@ -198,8 +203,8 @@ struct CropView: View {
             Picker("", selection: $cs.order) { ForEach(CropSession.Order.allCases) { Text($0.rawValue).tag($0) } }
                 .pickerStyle(.segmented).labelsHidden()
             Stepper(value: $cs.sideDiameters, in: 2...12, step: 1) { Text(String(format: "Width: %.0f × particle", cs.sideDiameters)).font(.callout) }
-            Toggle("Zoom out ×2", isOn: $cs.zoomOut).toggleStyle(.checkbox)
-                .help("Shows twice the width, for a particle that does not fit the crop. Circles of the wider window join this crop.")
+            Stepper(value: $cs.zoomLevel, in: 0...cs.maxZoomLevel, step: 1) { Text("Zoom out: \(cs.zoomLabel)").font(.callout) }
+                .help("Shows 2, 4, 8 or 16 times the width (up to the micrograph's size), for a particle that does not fit the crop. Circles of the wider window join this crop. Keys: ] zooms out, [ zooms in.")
             Toggle("Include empty crops", isOn: $cs.includeEmpty).toggleStyle(.checkbox)
                 .help("Also visit crops without any circle, to add particles the picker missed.")
         }
@@ -273,7 +278,7 @@ struct CropView: View {
         return ZStack(alignment: .topLeading) {
             if let img { Image(decorative: img, scale: 1).interpolation(sw.display.pixelated ? .none : .high).resizable().frame(width: side, height: side) }
             else { Rectangle().fill(.quaternary).frame(width: side, height: side) }
-            Canvas { ctx, _ in drawCircles(&ctx) }.frame(width: side, height: side).allowsHitTesting(false)
+            Canvas { ctx, _ in drawCircles(&ctx) }.frame(width: side, height: side).opacity(peeking ? 0 : 1).allowsHitTesting(false)
             if sw.display.isDenoised {
                 Rectangle().strokeBorder(Color.orange.opacity(0.9), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])).padding(3).allowsHitTesting(false)
             }
@@ -285,8 +290,8 @@ struct CropView: View {
                 }
         }
         .frame(width: side, height: side).clipped()
-        .contextMenu { circleMenu }
-        .overlay(alignment: .topLeading) { SwipeBadge(sw: sw, pc: pc, compact: true).padding(4).allowsHitTesting(false) }
+        .contextMenu { if !peeking { circleMenu } }
+        .overlay(alignment: .topLeading) { SwipeBadge(sw: sw, pc: pc, compact: true).padding(4).opacity(peeking ? 0 : 1).allowsHitTesting(false) }
         .overlay(alignment: .bottomTrailing) {
             Text(LengthUnits.format(angstroms: cs.windowPx * pc.effectiveAngpix, useAngstroms: units.angstroms) + " wide")
                 .font(.caption2).padding(3).background(.black.opacity(0.5)).foregroundStyle(.white).padding(4).allowsHitTesting(false)
@@ -342,7 +347,7 @@ struct CropView: View {
                 Button("Skip") { cs.skip() }.disabled(cs.remaining < 2).controlSize(.small)
                 Button { cs.commit() } label: { Text("Next crop  ↵") }.buttonStyle(.borderedProminent)
             }
-            Text("Click to add · drag to move · pinch or ↑ ↓ to resize · right-click to change type · double-click to remove")
+            Text("Click to add · drag to move · pinch or ↑ ↓ to resize · right-click to change type · double-click to remove · hold ` to hide · [ ] zoom")
                 .font(.caption2).foregroundStyle(.tertiary).lineLimit(1).minimumScaleFactor(0.7)
         }
     }
@@ -378,6 +383,7 @@ struct CropView: View {
     private var hoverItem: CropSession.Item? { hover.flatMap { h in let p = toPick(h); return cs.hit(x: p.x, y: p.y, tolerancePx: tolPx) } }
 
     private func dragChanged(_ v: DragGesture.Value) {
+        if peeking { return }                                  // circles are hidden: do not edit what you cannot see
         if !dragActive {
             dragActive = true; dragMoved = false; dragID = nil
             let p = toPick(v.startLocation)
@@ -394,6 +400,7 @@ struct CropView: View {
 
     private func dragEnded(_ v: DragGesture.Value) {
         defer { dragActive = false; dragMoved = false; dragID = nil }
+        if peeking { return }
         if dragMoved { lastClick = nil; return }
         let now = Date()
         if let id = dragID {
@@ -406,6 +413,7 @@ struct CropView: View {
     }
 
     private func magnify(_ m: CGFloat) {
+        if peeking { return }
         let target = cs.selected ?? hoverItem?.id
         if pinch == nil {
             let base = target.flatMap { id in cs.items.first { $0.id == id }?.diameterNm } ?? (cs.penNm > 0 ? cs.penNm : cs.defaultDiameterNm)
@@ -421,6 +429,12 @@ struct CropView: View {
 
     private func handle(_ p: KeyPress) -> KeyPress.Result {
         let c = p.characters.lowercased()
+        // hold ` to hide the circles; key repeat keeps it hidden, release shows them again
+        if OverlayPeek.isCropPeekCharacter(p.characters), !p.modifiers.contains(.command) {
+            peeking = p.phase != .up
+            return .handled
+        }
+        if p.phase != .down { return .ignored }                // everything else acts once per press, as before
         if p.modifiers.contains(.command) { if c == "z" { cs.undo(); return .handled }; return .ignored }
         switch p.key {
         case .return: if !cs.done { cs.commit() }; return .handled
@@ -436,6 +450,8 @@ struct CropView: View {
         default: break
         }
         if let l = store.scheme.label(forKey: c), l.exported { pc.activeLabel = l.id; if let s = cs.selected { cs.setLabel(s, l.id) }; return .handled }
+        if c == "]" { cs.zoomLevel += 1; return .handled }
+        if c == "[" { cs.zoomLevel -= 1; return .handled }
         if sw.handleDisplayKey(c) { return .handled }
         if c == "z" { cs.undo(); return .handled }
         return .ignored
