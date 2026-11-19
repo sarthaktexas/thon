@@ -393,16 +393,19 @@ final class PickController: ObservableObject {
     lazy var swipe = SwipeSession(pc: self)
     lazy var sort = SortSession(pc: self)
     lazy var crops = CropSession(pc: self)
+    lazy var class2D = Class2DSession(pc: self)
+    lazy var sizes = SizeModel(pc: self)
+    lazy var patterns = PatternModel(pc: self)
     private var classStar: URL?
 
-    func loadClasses(star: URL, tolerancePx: Double? = nil) {
+    func loadClasses(star: URL, tolerancePx: Double? = nil, nameToKey: [String: String]? = nil) {
         guard let text = try? String(contentsOf: star, encoding: .utf8) else { ioMessage = "Could not read \(star.lastPathComponent)"; return }
         let rows = ClassMapping.rows(fromStar: text)
         guard !rows.isEmpty else { ioMessage = "\(star.lastPathComponent): no particle table with _rlnMicrographName, _rlnCoordinateX/Y and _rlnClassNumber"; return }
         let tol = tolerancePx ?? classTolerance
         var picks: [String: [Pick]] = [:]
-        for (k, r) in store.project.mics { picks[k] = r.picks.filter { $0.status == .accepted } }
-        var m = ClassMapping.build(rows: rows, picks: picks, source: star.lastPathComponent, tolerancePx: tol)
+        for (k, r) in store.project.mics { picks[k] = r.picks.filter { $0.status == .accepted || $0.status == .candidate } }
+        var m = ClassMapping.build(rows: rows, picks: picks, source: star.lastPathComponent, tolerancePx: tol, nameToKey: nameToKey ?? Class2DJobs.nameMap(near: star) ?? [:])
         if let a = ClassMapping.averagesURL(forData: star) { m.averages = ClassMapping.loadAverages(a) }
         classes = m; classStar = star; hiddenClasses = []
         ioMessage = "\(m.matchedRows) of \(m.rows) particles in \(star.lastPathComponent) matched picks (tolerance \(Int(tol)) px); \(m.classes.count) classes" +
@@ -413,15 +416,15 @@ final class PickController: ObservableObject {
     func classColor(of p: Pick) -> String? { classes.flatMap { m in m.pickClass[p.id].map { ClassMapping.color($0) } } }
 
     /// Picks of class `n` on all micrographs, as (micrograph key, ids).
-    func picks(inClass n: Int) -> [String: Set<String>] {
+    func picks(inClass n: Int, status: PickStatus = .accepted) -> [String: Set<String>] {
         guard let m = classes else { return [:] }
         var out: [String: Set<String>] = [:]
-        for (k, r) in store.project.mics { for p in r.picks where p.status == .accepted && m.pickClass[p.id] == n { out[k, default: []].insert(p.id) } }
+        for (k, r) in store.project.mics { for p in r.picks where p.status == status && m.pickClass[p.id] == n { out[k, default: []].insert(p.id) } }
         return out
     }
     func selectClass(_ n: Int) {
         guard let k = currentKey, let m = classes else { return }
-        selection = Set(store.picks(k).filter { $0.status == .accepted && m.pickClass[$0.id] == n && isVisible($0) }.map { $0.id })
+        selection = Set(store.picks(k).filter { ($0.status == .accepted || $0.status == .candidate) && m.pickClass[$0.id] == n && isVisible($0) }.map { $0.id })
     }
     /// Relabel / dismiss every pick of a class across all micrographs (one undo step per micrograph).
     @discardableResult
@@ -429,9 +432,23 @@ final class PickController: ObservableObject {
         let g = picks(inClass: n); for (k, ids) in g { store.relabel(ids, to: label, in: k) }
         return g.values.reduce(0) { $0 + $1.count }
     }
+    /// Removes the accepted picks of a class; its candidates are dismissed (kept as dismissed so the auto-picker does not bring them back).
     @discardableResult
     func removeClass(_ n: Int) -> Int {
         let g = picks(inClass: n); for (k, ids) in g { store.remove(ids, from: k) }
+        let d = dismissClassCandidates(n)
+        pruneSelection()
+        return g.values.reduce(0) { $0 + $1.count } + d
+    }
+    /// Accepts every candidate of a class on all micrographs (one undo step per micrograph).
+    @discardableResult
+    func acceptClassCandidates(_ n: Int) -> Int {
+        let g = picks(inClass: n, status: .candidate); for (k, ids) in g { store.setStatus(ids, .accepted, in: k) }
+        return g.values.reduce(0) { $0 + $1.count }
+    }
+    @discardableResult
+    func dismissClassCandidates(_ n: Int) -> Int {
+        let g = picks(inClass: n, status: .candidate); for (k, ids) in g { store.setStatus(ids, .dismissed, in: k) }
         pruneSelection()
         return g.values.reduce(0) { $0 + $1.count }
     }

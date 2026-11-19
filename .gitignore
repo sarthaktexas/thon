@@ -10,3 +10,4 @@ docs/
 ios/ThonSwipe/*.xcodeproj/
 ios/ThonSwipe/ThonSwipe/Info.plist
 xcuserdata/
+dist/

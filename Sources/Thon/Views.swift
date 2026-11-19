@@ -24,6 +24,7 @@ struct ContentView: View {
             return true
         }
         .sheet(isPresented: $model.showGallery) { GalleryView(model: model) }
+        .sheet(isPresented: $model.showClass2D) { Class2DView(model: model) }
         .sheet(isPresented: $model.showSwipe) { SwipeView(model: model) }
         .sheet(isPresented: $model.showSessions) { SessionsView(model: model, store: model.picks.store) }
         .alert("Thon", isPresented: Binding(get: { model.loadError != nil }, set: { if !$0 { model.loadError = nil } })) {
@@ -62,6 +63,9 @@ struct ContentView: View {
                 Button { model.view.fit() } label: { Label("Fit", systemImage: "arrow.up.left.and.down.right.magnifyingglass") }
                 Button { model.view.setZoom(1) } label: { Label("100%", systemImage: "1.magnifyingglass") }
                 InvertToggle(vs: model.view)
+                Button { model.toggleSnapshot() } label: { Label("Picture", systemImage: "camera") }
+                    .help("Take a picture of the view: crop it, and include the markers, boxes and measurements that are on (⇧⌘P)")
+                    .disabled(model.doc == nil)
                 Button { model.showThonRings() } label: { Label("Thon rings (FFT)", systemImage: "circle.dashed") }.help("Power spectrum / Thon rings (T)")
                 Menu {
                     Button("PNG (current contrast)…") { model.exportPNG() }
@@ -317,12 +321,15 @@ struct ImagePane: View {
             MicrographView(model: model)
             PickOverlay(pc: model.picks, vs: model.view, store: model.picks.store, cs: model.picks.crops)
                 .opacity(model.overlaysHidden ? 0 : 1)
+            PatternOverlay(model: model.picks.patterns, pc: model.picks, vs: model.view)
+                .opacity(model.overlaysHidden ? 0 : 1)
             CropOverlay(cs: model.picks.crops, pc: model.picks, vs: model.view, store: model.picks.store)
                 .opacity(model.overlaysHidden ? 0 : 1)
             CropPenPreview(cs: model.picks.crops, pc: model.picks, vs: model.view, store: model.picks.store, cursor: model.cursor)
                 .opacity(model.overlaysHidden ? 0 : 1)
             MeasureOverlay(measure: model.measure, vs: model.view, pixelSizeA: model.doc?.entry.pixelSizeA)
                 .opacity(model.overlaysHidden ? 0 : 1)
+            SnapshotOverlay(snap: model.snapshot)
             if model.doc == nil && !model.isLoading {
                 Text("No image loaded").foregroundStyle(.secondary)
             }
@@ -330,6 +337,7 @@ struct ImagePane: View {
         }
         .overlay(alignment: .top) { StackHintBanner(model: model).padding(.top, 14) }
         .animation(.default, value: model.stackHint)
+        .overlay(alignment: .top) { SnapshotHUD(model: model, snap: model.snapshot, pc: model.picks, measure: model.measure, vs: model.view).padding(.top, 14) }
         .overlay(alignment: .bottom) { CropHUD(model: model, cs: model.picks.crops, pc: model.picks, store: model.picks.store).padding(.bottom, 14) }
         .overlay(alignment: .topLeading) { HeaderOverlay(model: model, tagChanges: model.picks.store.tagChanges).padding(10).opacity(model.overlaysHidden ? 0 : 1) }
         .overlay(alignment: .bottomLeading) { ScaleBar(vs: model.view, pixelSizeA: model.doc?.entry.pixelSizeA).padding(14).opacity(model.overlaysHidden ? 0 : 1) }
@@ -387,11 +395,12 @@ struct ScaleBar: View {
     @ObservedObject var vs: ViewState
     @ObservedObject var units = UnitSettings.shared
     let pixelSizeA: Double?
+    var targetPts: Double = 130
 
     var body: some View {
         if let p = pixelSizeA, vs.zoom > 0 {
             let ptsPerA = vs.zoom / (vs.backingScale == 0 ? 2 : vs.backingScale) / p
-            let (lenA, label) = nice(targetPts: 130, ptsPerA: ptsPerA)
+            let (lenA, label) = nice(targetPts: targetPts, ptsPerA: ptsPerA)
             VStack(alignment: .leading, spacing: 3) {
                 Text(label).font(.system(.caption, design: .monospaced).weight(.semibold))
                 Rectangle().frame(width: lenA * ptsPerA, height: 4)

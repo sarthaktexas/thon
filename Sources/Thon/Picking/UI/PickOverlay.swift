@@ -9,31 +9,41 @@ func hexString(_ color: Color) -> String {
     return String(format: "#%02x%02x%02x", Int((ns.redComponent * 255).rounded()), Int((ns.greenComponent * 255).rounded()), Int((ns.blueComponent * 255).rounded()))
 }
 
+/// Which parts of the picks go into a saved picture.
+struct PickExportStyle {
+    var markers: Bool      // the circle / ring / box / cross shapes (and the "?" flag)
+    var boxes: Bool        // the extraction boxes
+    var scores: Bool
+}
+
 /// Draws picks over the micrograph. Hit testing is done by the Metal view; this layer is display only.
 struct PickOverlay: View {
     @ObservedObject var pc: PickController
     @ObservedObject var vs: ViewState
     @ObservedObject var store: PickStore
     @ObservedObject var cs: CropSession
+    /// Set when drawing into a saved picture: what to draw is decided by the picture options, not by the viewer toggles, and
+    /// nothing interactive (selection halo, rubber band, crop-editor placeholders) is drawn.
+    var export: PickExportStyle? = nil
 
     var body: some View {
         Canvas { ctx, size in
-            guard pc.showMarkers, pc.currentKey != nil, vs.zoom > 0 else { return }
-            let editing = cs.active ? Set(cs.items.map { $0.id }) : []        // the crop editor draws these itself
+            guard export != nil || pc.showMarkers, pc.currentKey != nil, vs.zoom > 0 else { return }
+            let editing = (cs.active && export == nil) ? Set(cs.items.map { $0.id }) : []        // the crop editor draws these itself
             let bs = vs.backingScale == 0 ? 2 : vs.backingScale
             let g = ViewGeometry(zoom: vs.zoom, center: vs.center,
                                  viewPixels: CGSize(width: size.width * bs, height: size.height * bs), backingScale: bs)
             let ppp = g.pointsPerPixel
-            let sel = pc.selection
+            let sel = export == nil ? pc.selection : []
             let visibleRect = CGRect(x: -40, y: -40, width: size.width + 80, height: size.height + 80)
             let unsorted = pc.unsortedPickIDs()
             for p in pc.visiblePicks where !editing.contains(p.id) {
                 let c = g.pickToView(x: p.x, y: p.y)
                 let r = pc.diameterPx(p) * ppp / 2
                 guard visibleRect.insetBy(dx: -r, dy: -r).contains(c) else { continue }
-                Self.drawPick(&ctx, p, at: c, radius: r, pc: pc, store: store, selected: sel.contains(p.id), boxPts: pc.boxPx(p) * ppp, unsorted: unsorted.contains(p.id))
+                Self.drawPick(&ctx, p, at: c, radius: r, pc: pc, store: store, selected: sel.contains(p.id), boxPts: pc.boxPx(p) * ppp, unsorted: unsorted.contains(p.id), export: export)
             }
-            if let b = pc.boxRect {
+            if export == nil, let b = pc.boxRect {
                 let a = g.pickToView(x: b.minX, y: b.minY), z = g.pickToView(x: b.maxX, y: b.maxY)
                 let rect = CGRect(x: min(a.x, z.x), y: min(a.y, z.y), width: abs(z.x - a.x), height: abs(z.y - a.y))
                 ctx.fill(Path(rect), with: .color(.white.opacity(0.08)))
@@ -46,29 +56,33 @@ struct PickOverlay: View {
     /// Draws one pick (shape, candidate dash, selection halo, box, "?" and score) at view point `c` with radius `r` in points.
     /// Shared by the main overlay and the loupe so both look identical.
     static func drawPick(_ ctx: inout GraphicsContext, _ p: Pick, at c: CGPoint, radius r: Double,
-                         pc: PickController, store: PickStore, selected: Bool, boxPts: Double, unsorted: Bool = false) {
+                         pc: PickController, store: PickStore, selected: Bool, boxPts: Double, unsorted: Bool = false,
+                         export: PickExportStyle? = nil) {
+        let drawShape = export?.markers ?? true, showBoxes = export?.boxes ?? pc.showBoxes, showScores = export?.scores ?? pc.showScores
         let lab = store.scheme.label(p.label)
         let color = unsorted ? Color.white : (pc.showClassColors ? pc.classColor(of: p).map { swiftUIColor($0) } : nil) ?? lab.map { swiftUIColor($0.color) } ?? .gray
         let shape = lab?.shape ?? .circle
         let isCand = p.status == .candidate
         let style = isCand ? StrokeStyle(lineWidth: 1.5, dash: [4, 3]) : StrokeStyle(lineWidth: 1.6)
         let shapePath = path(shape, c, r)
-        if selected {
-            ctx.stroke(shapePath, with: .color(.white), style: StrokeStyle(lineWidth: 4.5))
-            ctx.stroke(Path(CGRect(x: c.x - 2.5, y: c.y - 2.5, width: 5, height: 5)), with: .color(.white), lineWidth: 1)
-        } else {
-            ctx.stroke(shapePath, with: .color(.black.opacity(0.55)), style: StrokeStyle(lineWidth: 3.2, dash: style.dash))
+        if drawShape {
+            if selected {
+                ctx.stroke(shapePath, with: .color(.white), style: StrokeStyle(lineWidth: 4.5))
+                ctx.stroke(Path(CGRect(x: c.x - 2.5, y: c.y - 2.5, width: 5, height: 5)), with: .color(.white), lineWidth: 1)
+            } else {
+                ctx.stroke(shapePath, with: .color(.black.opacity(0.55)), style: StrokeStyle(lineWidth: 3.2, dash: style.dash))
+            }
+            ctx.stroke(shapePath, with: .color(color.opacity(isCand ? 0.85 : 1)), style: style)
         }
-        ctx.stroke(shapePath, with: .color(color.opacity(isCand ? 0.85 : 1)), style: style)
-        if pc.showBoxes {
+        if showBoxes {
             ctx.stroke(Path(CGRect(x: c.x - boxPts / 2, y: c.y - boxPts / 2, width: boxPts, height: boxPts)),
                        with: .color(color.opacity(0.55)), lineWidth: 1)
         }
-        if p.isMaybe && store.project.params.maybeFlag {
+        if drawShape && p.isMaybe && store.project.params.maybeFlag {
             ctx.draw(Text("?").font(.system(size: max(10, min(18, r * 0.9)), weight: .bold, design: .monospaced)).foregroundColor(color),
                      at: CGPoint(x: c.x, y: c.y))
         }
-        if pc.showScores, let sc = p.score {
+        if showScores, let sc = p.score {
             ctx.draw(Text(String(format: "%.1f", sc)).font(.system(size: 10, design: .monospaced)).foregroundColor(.white),
                      at: CGPoint(x: c.x, y: c.y - r - 7))
         }

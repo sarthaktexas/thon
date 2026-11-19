@@ -2,33 +2,73 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>Thon</string>
-    <key>CFBundleDisplayName</key><string>Thon</string>
-    <key>CFBundleIdentifier</key><string>io.github.sarthaktexas.thon</string>
-    <key>CFBundleExecutable</key><string>Thon</string>
-    <key>CFBundleIconFile</key><string>AppIcon</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
-    <key>LSMinimumSystemVersion</key><string>14.0</string>
-    <key>NSHighResolutionCapable</key><true/>
-    <key>NSPrincipalClass</key><string>NSApplication</string>
-    <key>NSLocalNetworkUsageDescription</key><string>Thon lets your phone swipe through particle candidates over your local network, only while the Phone panel is switched on.</string>
-    <key>NSBonjourServices</key><array><string>_http._tcp</string><string>_thon-swipe._tcp</string><string>_thon-swipe._udp</string></array>
-    <key>CFBundleDocumentTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleTypeName</key><string>Electron micrograph (DM3/DM4/MRC)</string>
-            <key>CFBundleTypeExtensions</key><array><string>dm3</string><string>dm4</string><string>mrc</string><string>mrcs</string></array>
-            <key>CFBundleTypeRole</key><string>Viewer</string>
-            <key>LSHandlerRank</key><string>Alternate</string>
-        </dict>
-        <dict>
-            <key>CFBundleTypeName</key><string>Thon project</string>
-            <key>CFBundleTypeExtensions</key><array><string>thon</string></array>
-            <key>CFBundleTypeRole</key><string>Editor</string>
-            <key>LSHandlerRank</key><string>Owner</string>
-        </dict>
-    </array>
+	<key>CFBundleDisplayName</key>
+	<string>Thon</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>dm3</string>
+				<string>dm4</string>
+				<string>mrc</string>
+				<string>mrcs</string>
+			</array>
+			<key>CFBundleTypeName</key>
+			<string>Electron micrograph (DM3/DM4/MRC)</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+		</dict>
+		<dict>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>thon</string>
+			</array>
+			<key>CFBundleTypeName</key>
+			<string>Thon project</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+		</dict>
+	</array>
+	<key>CFBundleExecutable</key>
+	<string>Thon</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.sarthaktexas.thon</string>
+	<key>CFBundleName</key>
+	<string>Thon</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_http._tcp</string>
+		<string>_thon-swipe._tcp</string>
+		<string>_thon-swipe._udp</string>
+	</array>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Thon lets your phone swipe through particle candidates over your local network, only while the Phone panel is switched on.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/sarthaktexas/thon/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>owXxvO/VveO2xYVi7tBx4H+PeJprGFeGHOmXTDvfv2I=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 </dict>
 </plist>

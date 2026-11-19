@@ -139,6 +139,7 @@ final class AppModel: ObservableObject {
     @Published var tagQuery = ""
     @Published var inspectorTab: InspectorTab = .overview
     @Published var showGallery = false
+    @Published var showClass2D = false
     /// True while Space is held over the image: every overlay is hidden and clicks only pan.
     @Published var overlaysHidden = false
     @Published var showSwipe = false
@@ -150,10 +151,12 @@ final class AppModel: ObservableObject {
     let picks = PickController()
     let recents = RecentStore()
     let measure = MeasureState()
+    let snapshot = SnapshotState()
     private var picksBag = Set<AnyCancellable>()
 
     init() {
         picks.gallery.loader = { root, key in AppModel.loadPixels(root: root, key: key) }
+        picks.sizes.loader = { root, key in AppModel.loadPixels(root: root, key: key) }
         picks.gallery.onGoTo = { [weak self] key, x, y in self?.goTo(key: key, x: x, y: y) }
         picks.$enabled.sink { [weak self] on in
             if on { self?.inspectorTab = .picks; self?.showInspector = true }
@@ -689,6 +692,11 @@ final class AppModel: ObservableObject {
     }
 
     func handleKey(_ e: NSEvent) -> Bool {
+        // the picture frame owns Esc (close) and Return (save) while it is up; other keys behave as usual
+        if snapshot.active, !e.modifierFlags.contains(.command) {
+            if e.keyCode == 53 { snapshot.end(); return true }
+            if e.keyCode == 36 || e.keyCode == 76 { saveSnapshot(); return true }
+        }
         measure.quickClear()
         // while the ruler is on it gets Delete and Esc first, also inside the crop editor (so Esc ends the ruler, not the check)
         if measure.enabled, !e.modifierFlags.contains(.command), measure.handleKey(keyCode: e.keyCode) { return true }

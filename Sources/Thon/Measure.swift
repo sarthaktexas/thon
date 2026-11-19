@@ -166,6 +166,8 @@ struct MeasureOverlay: View {
     @ObservedObject var vs: ViewState
     @ObservedObject var units = UnitSettings.shared
     let pixelSizeA: Double?
+    /// Drawing into a saved picture: no selection highlight and no end handles.
+    var export = false
 
     var body: some View {
         Canvas { ctx, size in
@@ -177,7 +179,7 @@ struct MeasureOverlay: View {
             let all: [(MeasureLine, Bool)] = measure.lines.map { ($0, false) } + (measure.quick.map { [($0, true)] } ?? [])
             for (l, isQuick) in all {
                 let a = g.toView(l.a), b = g.toView(l.b)
-                let sel = !isQuick && l.id == measure.selected
+                let sel = !export && !isQuick && l.id == measure.selected
                 let col: Color = isQuick ? Color(red: 0.45, green: 0.9, blue: 1.0) : (sel ? .white : ink)
                 let dash: [CGFloat] = isQuick ? [6, 4] : []
                 var seg = Path(); seg.move(to: a); seg.addLine(to: b)
@@ -190,7 +192,7 @@ struct MeasureOverlay: View {
                 ctx.stroke(caps, with: .color(.black.opacity(0.6)), lineWidth: 3.4)
                 ctx.stroke(seg, with: .color(col), style: StrokeStyle(lineWidth: sel ? 1.8 : 1.3, dash: dash))
                 ctx.stroke(caps, with: .color(col), lineWidth: sel ? 1.8 : 1.3)
-                if sel || measure.enabled || isQuick {
+                if !export && (sel || measure.enabled || isQuick) {
                     for p in [a, b] {
                         let r = CGRect(x: p.x - 3.5, y: p.y - 3.5, width: 7, height: 7)
                         ctx.fill(Path(ellipseIn: r), with: .color(col)); ctx.stroke(Path(ellipseIn: r), with: .color(.black), lineWidth: 1)

@@ -26,6 +26,8 @@
 
 Download the latest DMG straight from [GitHub Releases](https://github.com/sarthaktexas/thon/releases/latest), open it, and drag Thon to your Applications folder. No installer and no account needed.
 
+Thon updates itself: it checks GitHub Releases once a day and offers new versions in a window (Thon ▸ Check for Updates…, or turn the daily check off in Settings).
+
 ### Supported devices
 
 | Device | Requirements |
@@ -70,7 +72,7 @@ Prefer the couch? You can also swipe through candidates from your phone, in a br
 
 ## Organize
 
-Group folders into `.thon` projects with one session per grid, so picks, labels and decisions stay together and survive renaming or moving a folder. Projects are backed up automatically. Import a RELION classification to color every pick by class and remove whole bad classes at once.
+Group folders into `.thon` projects with one session per grid, so picks, labels and decisions stay together and survive renaming or moving a folder. Projects are backed up automatically. Run RELION 2D classification on the picks from inside Thon (or import a finished one) to color every pick by class and remove whole bad classes at once. The Picks tab also draws a histogram of particle sizes, set or measured from the image.
 
 ## Build from source
 

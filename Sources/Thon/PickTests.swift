@@ -20,7 +20,19 @@ func runPickTests(_ args: [String]) -> Int32 {
     if args.contains("--autopick") { return runAutoPickCLI(args) }
     if args.contains("--export-picks") { return runExportCLI(args) }
     var t = TestRun()
-    PickProject.newProjectScheme = .views          // most tests were written against the six view labels (ids ring_top, side, …)
+    PickProject.newProjectScheme = .views
+    if args.contains("--patterns-only") {           // development: just the pattern suggestions suite
+        testPatterns(&t)
+        print("picktest: \(t.passed) passed, \(t.failed) failed")
+        return t.failed == 0 ? 0 : 1
+    }
+    if args.contains("--class2d-only") {
+        setvbuf(stdout, nil, _IONBF, 0)            // development: just the size histogram and 2D classification suites
+        testSizes(&t); testClass2D(&t)
+        if let i = args.firstIndex(of: "--data"), i + 1 < args.count { testClass2DRealData(&t, project: args[i + 1]) }
+        print("picktest: \(t.passed) passed, \(t.failed) failed")
+        return t.failed == 0 ? 0 : 1
+    }          // most tests were written against the six view labels (ids ring_top, side, …)
     testMRC(&t)
     testLabelScheme(&t)
     testQualityDefaultAndMaybe(&t)
@@ -42,6 +54,9 @@ func runPickTests(_ args: [String]) -> Int32 {
     testSessionMoves(&t)
     testGallery(&t)
     testClassMapping(&t)
+    testSizes(&t)
+    testClass2D(&t)
+    testPatterns(&t)
     testSwipe(&t)
     testPhone(&t)
     testSwipeDisplay(&t)
@@ -50,6 +65,7 @@ func runPickTests(_ args: [String]) -> Int32 {
     testCTF(&t)
     testMeasureAndUnits(&t)
     testQuickMeasureAndTools(&t)
+    testSnapshot(&t)
     print("picktest: \(t.passed) passed, \(t.failed) failed")
     return t.failed == 0 ? 0 : 1
 }

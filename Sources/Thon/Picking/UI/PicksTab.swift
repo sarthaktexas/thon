@@ -37,6 +37,8 @@ struct PicksTab: View {
                 micrographCard
                 displayCard
                 LoupeCard(model: model, pc: pc, cursor: model.cursor)
+                SizeHistogramCard(pc: pc, store: store, sizes: pc.sizes)
+                PatternsCard(pc: pc, store: store, model: pc.patterns)
                 classesCard
                 ioCard
                 projectCard
@@ -160,6 +162,7 @@ struct PicksTab: View {
     private var classesCard: some View {
         CollapsibleCard(title: "RELION classes", id: "classes") {
             HStack {
+                Button("Run 2D classification…") { model.showClass2D = true }
                 Button("Load classification…") { PickPanels.chooseClasses(model: model) }
                 Button("Gallery… (G)") { model.showGallery = true }
             }.controlSize(.small)
@@ -187,7 +190,10 @@ struct PicksTab: View {
                         Menu("→") {
                             ForEach(store.scheme.labels) { l in Button("Relabel all as \(l.name)") { pc.relabelClass(n, to: l.id) } }
                             Divider()
-                            Button("Remove all picks of this class", role: .destructive) { pc.removeClass(n) }
+                            Button("Accept the candidates of this class") { pc.acceptClassCandidates(n) }
+                            Button("Dismiss the candidates of this class") { pc.dismissClassCandidates(n) }
+                            Divider()
+                            Button("Remove its accepted picks, dismiss its candidates", role: .destructive) { pc.removeClass(n) }
                         }.menuStyle(.borderlessButton).frame(width: 30)
                     }
                 }

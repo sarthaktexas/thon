@@ -211,13 +211,14 @@ final class MicrographRenderer: NSObject, MTKViewDelegate {
         cmd.commit()
     }
 
-    func encodeScene(_ enc: MTLRenderCommandEncoder, size: CGSize) {
+    func encodeScene(_ enc: MTLRenderCommandEncoder, size: CGSize, center: CGPoint? = nil, zoom zoomOverride: Double? = nil) {
         guard !pyramid.isEmpty, width > 0 else { return }
-        let zoom = max(state.zoom, 1e-4)
+        let zoom = max(zoomOverride ?? state.zoom, 1e-4)
+        let ctr = center ?? state.center
         let lvl = zoom < 1 ? min(max(Int(floor(log2(1.0 / zoom))), 0), pyramid.count - 1) : 0
         let tex = pyramid[lvl]
         var u = Uniforms(viewSize: SIMD2(Float(size.width), Float(size.height)),
-                         center: SIMD2(Float(state.center.x), Float(state.center.y)),
+                         center: SIMD2(Float(ctr.x), Float(ctr.y)),
                          imgSize: SIMD2(Float(width), Float(height)),
                          levelSize: SIMD2(Float(tex.width), Float(tex.height)),
                          zoom: Float(zoom), lo: Float(state.lo), hi: Float(state.hi), gamma: Float(max(state.gamma, 0.05)),
@@ -226,6 +227,29 @@ final class MicrographRenderer: NSObject, MTKViewDelegate {
         enc.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 0)
         enc.setFragmentTexture(tex, index: 0)
         enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+    }
+
+    /// Render an arbitrary window of the image (`center` in viewer image coordinates, `zoom` in output pixels per image
+    /// pixel) with the current contrast settings into BGRA8. Unlike `renderOffscreen` it leaves the on-screen view state alone.
+    func renderRegion(width w: Int, height h: Int, center: CGPoint, zoom: Double) -> [UInt8]? {
+        guard w > 0, h > 0 else { return nil }
+        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: w, height: h, mipmapped: false)
+        d.usage = [.renderTarget, .shaderRead]
+        d.storageMode = device.hasUnifiedMemory ? .shared : .managed
+        guard let t = device.makeTexture(descriptor: d), let cmd = queue.makeCommandBuffer() else { return nil }
+        let rpd = MTLRenderPassDescriptor()
+        rpd.colorAttachments[0].texture = t
+        rpd.colorAttachments[0].loadAction = .clear
+        rpd.colorAttachments[0].clearColor = MTLClearColor(red: 0.075, green: 0.078, blue: 0.086, alpha: 1)
+        rpd.colorAttachments[0].storeAction = .store
+        guard let enc = cmd.makeRenderCommandEncoder(descriptor: rpd) else { return nil }
+        encodeScene(enc, size: CGSize(width: w, height: h), center: center, zoom: zoom)
+        enc.endEncoding()
+        if !device.hasUnifiedMemory, let blit = cmd.makeBlitCommandEncoder() { blit.synchronize(resource: t); blit.endEncoding() }
+        cmd.commit(); cmd.waitUntilCompleted()
+        var out = [UInt8](repeating: 0, count: w * h * 4)
+        out.withUnsafeMutableBytes { t.getBytes($0.baseAddress!, bytesPerRow: w * 4, from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0) }
+        return out
     }
 
     /// Render the current view into an offscreen BGRA8 buffer (used by --render and --selftest).

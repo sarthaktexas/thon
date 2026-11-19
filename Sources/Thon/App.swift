@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        UpdateController.shared.start()
         let args = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
         let urls = args.map { URL(fileURLWithPath: $0) }.filter { FileManager.default.fileExists(atPath: $0.path) }
         if !urls.isEmpty { Task { @MainActor in AppModel.shared.open(urls: urls) } }
@@ -31,6 +32,7 @@ struct ThonApp: App {
         }
         .defaultSize(width: 1500, height: 900)
         .commands {
+            CommandGroup(after: .appInfo) { CheckForUpdatesButton() }
             CommandGroup(replacing: .newItem) {
                 Button("Open Files…") { model.presentOpenPanel(folders: false) }.keyboardShortcut("o")
                 Button("Open Folder…") { model.presentOpenPanel(folders: true) }.keyboardShortcut("o", modifiers: [.command, .shift])
@@ -47,6 +49,8 @@ struct ThonApp: App {
                 Button("Add Session Folder…") { model.presentAddSessionPanel() }.disabled(!model.isProject)
                 Button("Add Sub-folders as Sessions…") { model.presentAddSubfolderSessionsPanel() }.disabled(!model.isProject)
                 Divider()
+                Button(model.snapshot.active ? "Close Picture Frame" : "Picture of View…") { model.toggleSnapshot() }.keyboardShortcut("p", modifiers: [.command, .shift])
+                    .disabled(model.doc == nil)
                 Button("Export PNG…") { model.exportPNG() }.keyboardShortcut("e")
                 Button("Export MRC (raw)…") { model.exportMRC(processed: false) }.keyboardShortcut("e", modifiers: [.command, .shift])
             }
@@ -64,6 +68,7 @@ struct ThonApp: App {
                 Button("Swipe Mode (classic)…") { model.showSwipe = true }
                 Button("Phone Swiper…") { PhoneController.shared.openPanel(model: model) }.keyboardShortcut("p", modifiers: [.command, .option])
                 Button("Gallery…") { model.showGallery = true }.keyboardShortcut("g", modifiers: [.command, .option])
+                Button("2D Classification with RELION…") { model.showClass2D = true }.keyboardShortcut("k", modifiers: [.command, .option])
                 Button("Load RELION Classification…") { PickPanels.chooseClasses(model: model) }
                 Divider()
                 Button("Import Picks…") { PickPanels.chooseImport(model: model, asCandidates: false) }

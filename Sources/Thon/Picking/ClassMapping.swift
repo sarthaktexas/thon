@@ -34,8 +34,9 @@ struct ClassMapping {
         return []
     }
 
-    /// Matches every star row to the nearest pick of its micrograph within `tolerancePx`.
-    static func build(rows: [Row], picks: [String: [Pick]], source: String, tolerancePx: Double) -> ClassMapping {
+    /// Matches every star row to the nearest pick of its micrograph within `tolerancePx`. `nameToKey` maps micrograph names written by Thon's own
+    /// RELION runs straight to project keys; other names are resolved by file name.
+    static func build(rows: [Row], picks: [String: [Pick]], source: String, tolerancePx: Double, nameToKey: [String: String] = [:]) -> ClassMapping {
         var m = ClassMapping(source: source, tolerancePx: tolerancePx)
         m.rows = rows.count
         let known = Array(picks.keys)
@@ -45,7 +46,8 @@ struct ClassMapping {
         var keyCache: [String: String?] = [:]
         for r in rows {
             let key: String?
-            if let c = keyCache[r.mic] { key = c } else { key = PickImporter.resolveKey(r.mic, known: known); keyCache[r.mic] = .some(key) }
+            if let c = keyCache[r.mic] { key = c }
+            else { key = nameToKey[r.mic] ?? PickImporter.resolveKey(r.mic, known: known); keyCache[r.mic] = .some(key) }
             guard let k = key, let g = grids[k] else { unmatchedMic.insert(r.mic); continue }
             if let p = g.nearest(x: r.x, y: r.y, radius: tolerancePx), m.pickClass[p.id] == nil {
                 m.pickClass[p.id] = r.cls; m.counts[r.cls, default: 0] += 1; m.matchedRows += 1
